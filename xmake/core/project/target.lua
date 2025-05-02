@@ -250,20 +250,37 @@ end
 
 -- build deps
 function _instance:_build_deps()
-    if target._project() then
-        local instances   = target._project().targets()
+    local project = target._project()
+    if project then
+        local instances   = project.targets()
         self._DEPS        = self._DEPS or {}
         self._ORDERDEPS   = self._ORDERDEPS or {}
         self._INHERITDEPS = self._INHERITDEPS or {}
-        instance_deps.load_deps(self, instances, self._DEPS, self._ORDERDEPS, {self:fullname()})
-        -- @see https://github.com/xmake-io/xmake/issues/4689
-        instance_deps.load_deps(self, instances, {}, self._INHERITDEPS, {self:fullname()}, function (t, dep)
-            local depinherit = t:extraconf("deps", dep:name(), "inherit")
-            if depinherit == nil then
-                depinherit = t:extraconf("deps", dep:fullname(), "inherit")
+        if project.policy("config.explicitly_declare_deps") then
+            local plaindeps = table.wrap(self:get("deps"))
+            local total = #plaindeps
+            for idx, _ in ipairs(plaindeps) do
+                -- we reverse to get the flat dependencies in order to ensure the correct linking order
+                -- @see https://github.com/xmake-io/xmake/issues/3144
+                local depname = plaindeps[total + 1 - idx]
+                local depinst = instances[depname]
+                if depinst then
+                    self._DEPS[depname] = depinst
+                    table.insert(self._ORDERDEPS, depinst)
+                    table.insert(self._INHERITDEPS, depinst)
+                end
             end
-            return depinherit == nil or depinherit
-        end)
+        else
+	        instance_deps.load_deps(self, instances, self._DEPS, self._ORDERDEPS, {self:fullname()})
+	        -- @see https://github.com/xmake-io/xmake/issues/4689
+	        instance_deps.load_deps(self, instances, {}, self._INHERITDEPS, {self:fullname()}, function (t, dep)
+	            local depinherit = t:extraconf("deps", dep:name(), "inherit")
+	            if depinherit == nil then
+	                depinherit = t:extraconf("deps", dep:fullname(), "inherit")
+	            end
+	            return depinherit == nil or depinherit
+	        end)
+        end
     end
 end
 

@@ -45,21 +45,21 @@ function instance_deps.load_deps(instance, instances, deps, orderdeps, depspath,
         -- we reverse to get the flat dependencies in order to ensure the correct linking order
         -- @see https://github.com/xmake-io/xmake/issues/3144
         local depname = plaindeps[total + 1 - idx]
-        local depinst = instances[depname]
-        if depinst == nil and instance.namespace then
-            local namespace = instance:namespace()
-            if namespace then
-                depinst = instances[namespace .. "::" .. depname]
+        if not deps[depname] then
+            local depinst = instances[depname]
+            if depinst == nil and instance.namespace then
+               local namespace = instance:namespace()
+                if namespace then
+                    depinst = instances[namespace .. "::" .. depname]
+                end
             end
-        end
-        if depinst then
-            local continue_walk = true
-            if walkdep then
-                continue_walk = walkdep(instance, depinst)
-            end
-            if continue_walk then
-                if not deps[depname] then
-                    deps[depname] = depinst
+            if depinst then
+                deps[depname] = depinst
+                local continue_walk = true
+                if walkdep then
+                    continue_walk = walkdep(instance, depinst)
+                end
+                if continue_walk then
                     local depspath_sub
                     if depspath then
                         for idx, name in ipairs(depspath) do
@@ -106,6 +106,23 @@ function instance_deps._sort_instance(instance, instances, orderinstances, insta
                 instance_deps._sort_instance(depinst, instances, orderinstances, instancerefs, depspath_sub)
             end
         end
+        table.insert(orderinstances, instance)
+    end
+end
+
+function instance_deps._sort_instance_no_circular(instance, instances, orderinstances, instancerefs)
+    for _, depname in ipairs(table.wrap(instance:get("deps"))) do
+        if not instancerefs[depname] then
+            instancerefs[depname] = true
+            local depinst = instances[depname]
+            if depinst then
+                instance_deps._sort_instance_no_circular(depinst, instances, orderinstances, instancerefs)
+            end
+            table.insert(orderinstances, depinst)
+        end
+    end
+    if not instancerefs[instance:name()] then
+        instancerefs[instance:name()] = true
         table.insert(orderinstances, instance)
     end
 end

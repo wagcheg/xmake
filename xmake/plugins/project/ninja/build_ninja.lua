@@ -364,6 +364,14 @@ function _add_build_for_target(ninjafile, target, outputdir)
     -- build target file
     ninjafile:printf("build %s: %s", targetfile, target:linker():kind())
     local objectfiles = target:objectfiles()
+
+    if is_plat("windows") then
+        local cxxpcheader = target:pcheaderfile("cxx")
+        if cxxpcheader then
+            local pchobj = target:objectfile(cxxpcheader)
+            table.insert(objectfiles, pchobj)
+        end
+    end
     for _, objectfile in ipairs(objectfiles) do
         ninjafile:write(" " .. _get_relative_unix_path(objectfile, outputdir))
     end
@@ -378,7 +386,11 @@ function _add_build_for_target(ninjafile, target, outputdir)
         ninjafile:print(" || $")
         ninjafile:write("  ")
         for _, dep in ipairs(deps) do
-            ninjafile:write(" " .. _get_relative_unix_path(project.target(dep, {namespace = target:namespace()}):targetfile(), outputdir))
+            if project.target(dep):targetfile() then
+                ninjafile:write(" " .. _get_relative_unix_path(project.target(dep, {namespace = target:namespace()}):targetfile(), outputdir))
+            else
+                ninjafile:write(" " .. project.target(dep, {namespace = target:namespace()}):name())
+            end
         end
     end
     ninjafile:print("")
@@ -419,10 +431,10 @@ function _add_build_for_targets(ninjafile, outputdir)
 
     -- TODO
     -- disable precompiled header first
-    for _, target in pairs(project.targets()) do
-        target:set("pcheader", nil)
-        target:set("pcxxheader", nil)
-    end
+    -- for _, target in pairs(project.targets()) do
+    --     target:set("pcheader", nil)
+    --     target:set("pcxxheader", nil)
+    -- end
 
     -- build targets
     for _, target in pairs(project.targets()) do

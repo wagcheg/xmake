@@ -174,7 +174,9 @@ function policy.policies()
             --   private: it will disable fetch remote package repositories
             ["network.mode"]                      = {description = "Set the network mode", type = "string"},
             -- Set the compatibility version, e.g. 2.0, 3.0
-            ["compatibility.version"]             = {description = "Set the compatibility version", type = "string", default = "3.0", values = {"2.0", "3.0"}}
+            ["compatibility.version"]             = {description = "Set the compatibility version", type = "string", default = "3.0", values = {"2.0", "3.0"}},
+            -- Explicitly declare project deps so we can use linear line complexity algorithm
+            ["config.explicitly_declare_deps"]    = {description = "Imporve config speeed for huge project, need explicitly declare project deps", default = false, type = "boolean"},
         }
         policy._POLICIES = policies
     end

@@ -78,7 +78,7 @@ end
 -- tranlate path
 function _translate_path(filepath, outputdir)
     filepath = path.translate(filepath)
-    if filepath == "" then
+    if filepath == nil or filepath == "" then
         return ""
     end
     if path.is_absolute(filepath) then
@@ -103,6 +103,9 @@ end
 -- escape path in flag
 -- @see https://github.com/xmake-io/xmake/issues/3161
 function _escape_path_in_flag(target, flag)
+    if type(flag) == "table" then
+        flag = flag[1]
+    end
     if is_host("windows") then
         -- e.g. /ManifestInput:..\..\, /def:xxx, -isystem c:\xxx, -Ic:\..
         if flag:find("\\", 1, true) then
@@ -1010,7 +1013,12 @@ function _add_target_link_libraries(cmakelists, target, outputdir)
 
     local has_links = #target:objectfiles() > objectfiles_set:size()
     if has_links then
-        cmakelists:print("target_link_libraries(%s PRIVATE", target:name())
+        local cmake_minver = _get_cmake_minver()
+        if cmake_minver:ge("3.13.0") then
+            cmakelists:print("target_link_options(%s PRIVATE", target:name())
+        else
+            cmakelists:print("target_link_libraries(%s PRIVATE", target:name())
+        end
         for _, objectfile in ipairs(target:objectfiles()) do
             if not objectfiles_set:has(objectfile) then
                 cmakelists:print("    " .. _get_relative_unix_path_to_cmake(objectfile, outputdir))
