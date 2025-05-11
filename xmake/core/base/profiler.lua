@@ -22,6 +22,7 @@
 local profiler = {}
 
 -- load modules
+local io        = require("base/io")
 local os        = require("base/os")
 local path      = require("base/path")
 local heap      = require("base/heap")
@@ -178,12 +179,13 @@ function profiler._flamegraph_handler(hooktype)
         end
     end
     backtraces = table.reverse(backtraces)
-    print(table.concat(backtraces, ";").." "..newtime)
+    _G._perffile:print(table.concat(backtraces, ";").." "..newtime)
 end
 
 -- start profiling
 function profiler:start()
     if self:is_flamegraph() then
+        _G._perffile = _G._perffile or io.open("perf.fold", "w")
         debug.sethook(profiler._flamegraph_handler, 'cr', 0)
     elseif self:is_trace() then
         debug.sethook(profiler._tracing_handler, 'cr', 0)
@@ -199,6 +201,9 @@ end
 function profiler:stop()
     if self:is_trace() or self:is_flamegraph() then
         debug.sethook()
+    elseif self:is_flamegraph() then
+        debug.sethook()
+        _G._perffile:flush()
     elseif self:is_perf("call") then
         self._STOPTIME = os.clock()
         debug.sethook()

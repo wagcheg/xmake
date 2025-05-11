@@ -357,12 +357,43 @@ function add_targetjobs_and_deps(jobgraph, target, targetrefs, opt)
     end
 end
 
+-- add target jobs for the given target and deps without orders
+function add_targetjobs_and_deps_without_orders(jobgraph, target, targetrefs, opt)
+    local targetname = target:fullname()
+    targetrefs[targetname] = target
+    add_targetjobs(jobgraph, target, opt)
+    for _, depname in ipairs(target:get("deps")) do
+        if not targetrefs[depname] then
+            local dep = project.target(depname, {namespace = target:namespace()})
+            add_targetjobs_and_deps_without_orders(jobgraph, dep, targetrefs, opt)
+        end
+    end
+end
+
+-- add target orders for the given target and deps
+function add_target_and_deps_orders(jobgraph, target, opt)
+    local targetname = target:fullname()
+    for _, depname in ipairs(target:get("deps")) do
+        local dep = project.target(depname, {namespace = target:namespace()})
+        _add_targetjobs_orders(jobgraph, target, dep, opt)
+    end
+end
+
 -- get target jobs
 function get_targetjobs(targets_root, opt)
     local jobgraph = async_jobgraph.new(opt.job_kind)
     local targetrefs = {}
-    for _, target in ipairs(targets_root) do
-        add_targetjobs_and_deps(jobgraph, target, targetrefs, opt)
+    if project.policy("config.explicitly_declare_deps") then
+        for _, target in ipairs(targets_root) do
+            add_targetjobs_and_deps_without_orders(jobgraph, target, targetrefs, opt)
+        end
+        for _, target in pairs(targetrefs) do
+            add_target_and_deps_orders(jobgraph, target, opt)
+        end
+    else
+        for _, target in ipairs(targets_root) do
+            add_targetjobs_and_deps(jobgraph, target, targetrefs, opt)
+        end
     end
     return jobgraph
 end

@@ -283,7 +283,7 @@ function project._load_scope(scope_kind, deduplicate, enable_filter)
     local interp = project.interpreter()
 
     -- load scope
-    local results, errors = interp:make(scope_kind, deduplicate, enable_filter)
+    local results, errors = interp:make(scope_kind, deduplicate, false)
     if not results then
         return nil, errors
     end

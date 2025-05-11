@@ -73,7 +73,7 @@ function _instance:_api_handle(name, values)
         end
 
         -- filter values
-        if self._ENABLE_FILTER then
+        if false then
             values = interp:_filter(values)
         end
     end
