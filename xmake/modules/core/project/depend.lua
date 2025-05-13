@@ -218,7 +218,7 @@ function on_changed(callback, opt)
     -- @see https://github.com/xmake-io/xmake/issues/748
     if not is_changed(dependinfo, {
             timecache = opt.timecache,
-            lastmtime = math.min(opt.lastmtime or 0, os.mtime(dependfile)),
+            lastmtime = opt.lastmtime > 0 and os.mtime(dependfile) or 0,
             values = opt.values, files = opt.files}) then
         return
     end

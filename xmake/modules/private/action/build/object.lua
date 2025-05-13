@@ -62,7 +62,7 @@ function _do_build_file(target, sourcefile, opt)
         -- but we cannot cache it in link stage, maybe some objectfiles will be updated.
         -- @see https://github.com/xmake-io/xmake/issues/6089
 
-        local lastmtime = math.min(os.mtime(objectfile), os.mtime(dependfile))
+        local lastmtime = os.isfile(objectfile) and os.mtime(dependfile) or 0
         if not depend.is_changed(dependinfo, {lastmtime = lastmtime, values = depvalues, timecache = true}) then
             return
         end
