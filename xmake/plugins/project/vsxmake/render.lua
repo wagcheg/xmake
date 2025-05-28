@@ -25,6 +25,7 @@ function _fill(opt, params)
     return function(match)
         local imp = match:match("^Import%((.+)%)$")
         if imp then
+            print(imp .. "(*)", opt.templatedir)
             local func = find_file(imp .. "(*)", opt.templatedir)
             assert(func)
             local args = path.filename(func):match("%((.+)%)$"):split(",", {plain = true})
