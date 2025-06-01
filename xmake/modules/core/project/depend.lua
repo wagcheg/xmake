@@ -99,6 +99,9 @@ function is_changed(dependinfo, opt)
     local files = table.wrap(dependinfo.files)
     local values = table.wrap(dependinfo.values)
     if #files == 0 and #values == 0 then
+        if _is_show_diagnosis_info() then
+            cprint("${color.warning}[check_build_deps]: files and values are empty")
+        end
         return true
     end
 
@@ -134,6 +137,9 @@ function is_changed(dependinfo, opt)
     local depvalues = values
     local optvalues = table.wrap(opt.values)
     if #depvalues ~= #optvalues then
+        if _is_show_diagnosis_info() then
+            cprint("${color.warning}[check_build_deps]: values count mismatch, old: %s, new: %s", depvalues, optvalues)
+        end
         return true
     end
     for idx, depvalue in ipairs(depvalues) do
@@ -141,6 +147,9 @@ function is_changed(dependinfo, opt)
         local deptype = type(depvalue)
         local opttype = type(optvalue)
         if deptype ~= opttype then
+            if _is_show_diagnosis_info() then
+                cprint("${color.warning}[check_build_deps]: value %s != %s", depvalue, optvalue)
+            end
             return true
         elseif deptype == "string" and depvalue ~= optvalue then
             if _is_show_diagnosis_info() then
@@ -163,6 +172,9 @@ function is_changed(dependinfo, opt)
     if opt.files then
         local optfiles = table.wrap(opt.files)
         if #files ~= #optfiles then
+            if _is_show_diagnosis_info() then
+                cprint("${color.warning}[check_build_deps]: files count mismatch, old: %s, new: %s", files, optfiles)
+            end
             return true
         end
         for idx, file in ipairs(files) do
