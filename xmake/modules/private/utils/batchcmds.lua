@@ -36,7 +36,6 @@ local batchcmds = batchcmds or object { _init = {"_TARGET", "_CMDS", "_DEPINFO",
 
 -- show text
 function _show(showtext, progress)
-    progress = type(progress) == "table" and progress:percent() or math.floor(progress)
     if option.get("verbose") then
         cprint(showtext)
     else
@@ -309,6 +308,7 @@ function batchcmds:compilev(argv, opt)
     -- bind target if exists
     opt = opt or {}
     opt.target = self._TARGET
+    opt.verbose = (opt.verbose == nil) and true or opt.verbose
 
     -- load compiler and get compilation command
     local compiler_inst = opt.compiler
@@ -338,7 +338,11 @@ function batchcmds:compilev(argv, opt)
     end
 
     -- add compilation command and bind run environments of compiler
-    self:vrunv(compiler_inst:program(), argv, {envs = table.join(compiler_inst:runenvs(), opt.envs)})
+    if opt.verbose then
+        self:vrunv(compiler_inst:program(), argv, {envs = table.join(compiler_inst:runenvs(), opt.envs)})
+    else
+        self:runv(compiler_inst:program(), argv, {envs = table.join(compiler_inst:runenvs(), opt.envs)})
+    end
 end
 
 -- add command: linker.link

@@ -20,15 +20,13 @@
 
 -- imports
 import("core.base.semver")
+import("core.tool.toolchain")
 import("core.project.config")
 import("lib.detect.find_tool")
 import(".support", {inherit = true})
 
 -- load module support for the current target
 function load(target)
-
-    local msvc = target:toolchain("msvc")
-    local vcvars = msvc:config("vcvars")
 
     -- enable std modules if c++23 by defaults
     if target:data("c++.msvc.enable_std_import") == nil and target:policy("build.c++.modules.std") then
@@ -48,27 +46,28 @@ function load(target)
         local msvc = target:toolchain("msvc")
         if msvc then
             local vcvars = msvc:config("vcvars")
-            if vcvars.VCInstallDir and vcvars.VCToolsVersion and semver.compare(vcvars.VCToolsVersion, "14.35") > 0 then
+            if vcvars.VCInstallDir and vcvars.VCToolsVersion and semver.compare(vcvars.VCToolsVersion, "14.35") >= 0 then
                 stdmodulesdir = path.join(vcvars.VCInstallDir, "Tools", "MSVC", vcvars.VCToolsVersion, "modules")
             end
         end
-        target:data_set("c++.msvc.enable_std_import", isatleastcpp23 and os.isdir(stdmodulesdir))
+        if stdmodulesdir then
+            target:data_set("c++.msvc.enable_std_import", isatleastcpp23 and os.isdir(stdmodulesdir))
+        end
     end
 end
 
--- strip flags that doesn't affect bmi generation
-function strip_flags(target, flags)
+-- flags that doesn't affect bmi generation
+function strippeable_flags()
+
     -- speculative list as there is no resource that list flags that prevent reusability, this list will likely be improve over time
     -- @see https://learn.microsoft.com/en-us/cpp/build/reference/compiler-options-listed-alphabetically?view=msvc-170
-    local strippable_flags = {
-        "I",
+    local strippeable_flags = {
         "TP",
         "errorReport",
         "W",
         "w",
         "sourceDependencies",
         "scanDependencies",
-        "reference",
         "PD",
         "nologo",
         "MP",
@@ -76,10 +75,8 @@ function strip_flags(target, flags)
         "interface",
         "ifcOutput",
         "help",
-        "headerUnit",
         "headerName",
         "Fp",
-        "Fo",
         "Fm",
         "Fe",
         "Fd",
@@ -94,26 +91,13 @@ function strip_flags(target, flags)
         "analyze",
         "?",
     }
-    local strict = target:policy("build.c++.modules.reuse.strict") or
-                   target:policy("build.c++.modules.tryreuse.discriminate_on_defines")
-    if not strict then
-        table.join2(strippable_flags, {"D", "U"})
-    end
-    local output = {}
-    for _, flag in ipairs(flags) do
-        local strip = false
-        for _, _flag in ipairs(strippable_flags) do
-            if flag:startswith("cl::-" .. _flag) or flag:startswith("cl::/" .. _flag) or
-               flag:startswith("-" .. _flag) or flag:startswith("/" .. _flag) then
-                strip = true
-                break
-            end
-        end
-        if not strip then
-            table.insert(output, flag)
-        end
-    end
-    return output
+    local splitted_strippeable_flags = {
+        "Fo",
+        "I",
+        "reference",
+        "headerUnit",
+    }
+    return strippeable_flags, splitted_strippeable_flags
 end
 
 -- provide toolchain include dir for stl headerunit when p1689 is not supported
@@ -130,25 +114,32 @@ function toolchain_includedirs(target)
     raise("msvc toolchain includedirs not found!")
 end
 
+function has_two_phase_compilation_support(_)
+    return false
+end
+
 -- build c++23 standard modules if needed
-function get_stdmodules(target)
-    if target:policy("build.c++.modules.std") then
-        if target:data("c++.msvc.enable_std_import") then
-            local msvc = target:toolchain("msvc")
-            if msvc then
-                local vcvars = msvc:config("vcvars")
-                if vcvars.VCInstallDir and vcvars.VCToolsVersion then
-                    modules = {}
-
-                    local stdmodulesdir = path.join(vcvars.VCInstallDir, "Tools", "MSVC", vcvars.VCToolsVersion, "modules")
-                    assert(stdmodulesdir, "Can't enable C++23 std modules, directory missing !")
-
-                    return {path.join(stdmodulesdir, "std.ixx"), path.join(stdmodulesdir, "std.compat.ixx")}
-                end
+function get_stdmodules(target, opt)
+    opt = opt or {}
+    if not target:policy("build.c++.modules.std") then
+        return
+    end
+    local msvc
+    if opt.toolchain then
+        msvc = toolchain.load("msvc", {plat = opt.toolchain:plat(), arch = opt.toolchain:arch()})
+    else
+        msvc = target:toolchain("msvc")
+    end
+    if msvc and msvc:check() then
+        local vcvars = msvc:config("vcvars")
+        if vcvars.VCInstallDir and vcvars.VCToolsVersion then
+            local stdmodulesdir = path.join(vcvars.VCInstallDir, "Tools", "MSVC", vcvars.VCToolsVersion, "modules")
+            if os.isdir(stdmodulesdir) then
+                return {path.normalize(path.join(stdmodulesdir, "std.ixx")), path.normalize(path.join(stdmodulesdir, "std.compat.ixx"))}
             end
         end
-        wprint("std and std.compat modules not found! disabling them for the build")
     end
+    wprint("std and std.compat modules not found! disabling them for the build")
 end
 
 function get_bmi_extension()
@@ -178,19 +169,6 @@ function get_ifconlyflag(target)
         _g.ifconlyflag = ifconlyflag or false
     end
     return ifconlyflag or nil
-end
-
-function get_ifcsearchdirflag(target)
-    local ifcsearchdirflag = _g.ifcsearchdirflag
-    if ifcsearchdirflag == nil then
-        local compinst = target:compiler("cxx")
-        if compinst:has_flags({"-ifcSearchDir", os.tmpdir()}, "cxxflags", {flagskey = "cl_ifc_search_dir"})  then
-            ifcsearchdirflag = "-ifcSearchDir"
-        end
-        assert(ifcsearchdirflag, "compiler(msvc): does not support c++ module flag(/ifcSearchDir)!")
-        _g.ifcsearchdirflag = ifcsearchdirflag or false
-    end
-    return ifcsearchdirflag or nil
 end
 
 function get_interfaceflag(target)

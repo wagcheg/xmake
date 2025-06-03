@@ -78,13 +78,11 @@ function _translate_compflags(compflags, outputdir)
     local last_flag = nil;
     for _, flag in ipairs(compflags) do
         if flag == "-I" or flag == "-isystem" then
-            last_flag = flag
         else
             if last_flag == "-I" or last_flag == "-isystem" then
                 table.insert(flags, last_flag)
                 flag = _get_relative_unix_path(flag, outputdir)
             else
-                last_flag = flag
                 for _, pattern in ipairs({"[%-](I)(.*)", "[%-](isystem)(.*)"}) do
                     flag = flag:gsub(pattern, function (flag, dir)
                             dir = _get_relative_unix_path(dir, outputdir)
@@ -94,6 +92,7 @@ function _translate_compflags(compflags, outputdir)
             end
             table.insert(flags, flag)
         end
+        last_flag = flag
     end
     return flags
 end
@@ -352,7 +351,7 @@ function _add_build_for_target(ninjafile, target, outputdir)
     target:data_set("plugin.project.kind", "ninja")
 
     -- is phony target?
-    if target:is_phony() then
+    if target:is_phony() or target:is_headeronly() then
         return _add_build_for_phony(ninjafile, target)
     end
 
@@ -364,14 +363,13 @@ function _add_build_for_target(ninjafile, target, outputdir)
     -- build target file
     ninjafile:printf("build %s: %s", targetfile, target:linker():kind())
     local objectfiles = target:objectfiles()
-
-    if is_plat("windows") then
-        local cxxpcheader = target:pcheaderfile("cxx")
-        if cxxpcheader then
-            local pchobj = target:objectfile(cxxpcheader)
-            table.insert(objectfiles, pchobj)
-        end
-    end
+--     if is_plat("windows") then
+--         local cxxpcheader = target:pcheaderfile("cxx")
+--         if cxxpcheader then
+--             local pchobj = target:objectfile(cxxpcheader)
+--             table.insert(objectfiles, pchobj)
+--         end
+--     end
     for _, objectfile in ipairs(objectfiles) do
         ninjafile:write(" " .. _get_relative_unix_path(objectfile, outputdir))
     end
@@ -431,10 +429,10 @@ function _add_build_for_targets(ninjafile, outputdir)
 
     -- TODO
     -- disable precompiled header first
-    -- for _, target in pairs(project.targets()) do
-    --     target:set("pcheader", nil)
-    --     target:set("pcxxheader", nil)
-    -- end
+    for _, target in pairs(project.targets()) do
+        target:set("pcheader", nil)
+        target:set("pcxxheader", nil)
+    end
 
     -- build targets
     for _, target in pairs(project.targets()) do

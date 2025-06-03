@@ -5,6 +5,7 @@
 ### New features
 
 * [#5926](https://github.com/xmake-io/xmake/issues/5926): Add MIDL support
+* [#6414](https://github.com/xmake-io/xmake/pull/6414): Add platform.windows.subsystem rule
 
 ### Changes
 
@@ -13,6 +14,7 @@
 * [#5526](https://github.com/xmake-io/xmake/discussions/5526): Use MD/MDd runtimes for msvc by default
 * [#5545](https://github.com/xmake-io/xmake/discussions/5545): Use ninja generator for cmake package by default
 * [#6355](https://github.com/xmake-io/xmake/pull/6355): Support customizing implib path of MinGW/MSVC
+* [#6373](https://github.com/xmake-io/xmake/pull/6373): Improve c++ modules support
 
 ## v2.9.9
 
@@ -1983,6 +1985,7 @@
 ### 新特性
 
 * [#5926](https://github.com/xmake-io/xmake/issues/5926): 添加 MIDL 支持
+* [#6414](https://github.com/xmake-io/xmake/pull/6414): 添加 platform.windows.subsystem 规则
 
 ### 改进
 
@@ -1991,6 +1994,7 @@
 * [#5526](https://github.com/xmake-io/xmake/discussions/5526): msvc 默认切换到 MD/MDd 运行时
 * [#5545](https://github.com/xmake-io/xmake/discussions/5545): 构建 cmake 包，默认使用 Ninja 生成器
 * [#6355](https://github.com/xmake-io/xmake/pull/6355): 支持自定义 implib 路径和访问
+* [#6373](https://github.com/xmake-io/xmake/pull/6373): 改进 c++ modules 支持
 
 ## v2.9.9
 

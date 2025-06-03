@@ -23,8 +23,12 @@ import("core.base.json")
 import("core.base.hashset")
 import("core.base.graph")
 import("core.base.option")
+import("core.base.profiler")
+import("core.base.bytes")
+import("async.jobgraph")
 import("async.runjobs")
 import("support")
+import("mapper")
 import("stlheaders")
 
 function _scanner(target)
@@ -32,6 +36,8 @@ function _scanner(target)
 end
 
 function _parse_meta_info(target, metafile)
+
+    profiler.enter(target:fullname(), "c++ modules", "scanner", "parse metainfo", metafile)
     local metadata = json.loadfile(metafile)
     if metadata.file and metadata.name then
         return metadata.file, metadata.name, metadata
@@ -57,7 +63,18 @@ function _parse_meta_info(target, metafile)
             break
         end
     end
+    profiler.leave(target:fullname(), "c++ modules", "scanner", "parse metainfo", metafile)
     return filename, name, metadata
+end
+
+function _get_headerunit_bmifile(target, headerfile)
+    local outputdir = support.get_outputdir(target, headerfile, {headerunit = true})
+    return path.join(outputdir, path.filename(headerfile) .. support.get_bmi_extension(target))
+end
+
+function _bmifile_for(target, module)
+    local bmifile = support.get_bmi_path(path.filename(module.name) .. support.get_bmi_extension(target))
+    return path.join(support.get_outputdir(target, module.sourcefile, {interface = module.interface, headerunit = module.headerunit}), bmifile)
 end
 
 -- parse module dependency data
@@ -73,7 +90,7 @@ end
     },
     provides = {
       hello = {
-        bmi = "build/.gens/stl_headerunit/linux/x86_64/release/rules/modules/cache/hello.gcm",
+        bmifile = "build/.gens/stl_headerunit/linux/x86_64/release/rules/modules/cache/hello.gcm",
         sourcefile = "src/hello.mpp"
       }
     }
@@ -88,257 +105,557 @@ end
     }
   }
 }]]
-function _parse_dependencies_data(target, moduleinfos)
-    local modules
-    for _, moduleinfo in ipairs(moduleinfos) do
-        assert(moduleinfo.version <= 1)
-        for _, rule in ipairs(moduleinfo.rules) do
-            modules = modules or {}
-            local m = {}
-            if rule.provides then
-                for _, provide in ipairs(rule.provides) do
-                    m.provides = m.provides or {}
-                    assert(provide["logical-name"])
-                    local bmifile = provide["compiled-module-path"]
-                    -- try to find the compiled module path in outputs filed (MSVC doesn't generate compiled-module-path)
-                    if not bmifile then
-                        for _, output in ipairs(rule.outputs) do
-                            if output:endswith(support.get_bmi_extension(target)) then
-                                bmifile = output
-                                break
-                            end
-                        end
+function _parse_moduleinfo(target, moduleinfo)
+    assert(moduleinfo.version <= 1)
+    local module
+    local headerunitsinfo
+    for _, rule in ipairs(moduleinfo.rules) do
+        module = {objectfile = path.translate(rule["primary-output"]), sourcefile = moduleinfo.sourcefile}
 
-                        -- we didn't found the compiled module path, so we assume it
-                        if not bmifile then
-                            local name = provide["logical-name"] .. support.get_bmi_extension(target)
-                            -- partition ":" character is invalid path character on windows
-                            -- @see https://github.com/xmake-io/xmake/issues/2954
-                            name = name:replace(":", "-")
-                            bmifile = path.join(support.get_outputdir(target,  name), name)
-                        end
-                    end
-                    m.provides[provide["logical-name"]] = {
-                        bmi = bmifile,
-                        sourcefile = moduleinfo.sourcefile,
-                        interface = provide["is-interface"]
-                    }
+        if rule.provides then
+            -- assume rule.provides is always one element on C++
+            -- @see https://www.open-std.org/jtc1/sc22/wg21/docs/papers/2022/p1689r5.html
+            local provide = rule.provides and rule.provides[1]
+            if provide then
+                assert(provide["logical-name"])
+
+                module.name = provide["logical-name"]
+                module.sourcefile = module.sourcefile or path.normalize(provide["source-path"])
+                module.headerunit = provide["is-headerunit"]
+                module.interface = (not module.headerunit and provide["is-interface"] == nil) and true or provide["is-interface"]
+                module.method = provide["lookup-method"] or "by-name"
+
+                if module.headerunit then
+                    local key = support.get_headerunit_key(target, module.sourcefile)
+                    module.key = key
                 end
-            else
-                m.cppfile = moduleinfo.sourcefile
+
+                -- XMake handle bmifile so we don't need rely on compiler-module-path
+                module.bmifile = _bmifile_for(target, module)
             end
-            assert(rule["primary-output"])
-            modules[path.translate(rule["primary-output"])] = m
         end
-    end
 
-    for _, moduleinfo in ipairs(moduleinfos) do
-        for _, rule in ipairs(moduleinfo.rules) do
-            local m = modules[path.translate(rule["primary-output"])]
-            for _, r in ipairs(rule.requires) do
-                m.requires = m.requires or {}
-                local p = r["source-path"]
-                if not p then
-                    for _, dependency in pairs(modules) do
-                        if dependency.provides and dependency.provides[r["logical-name"]] then
-                            p = dependency.provides[r["logical-name"]].bmi
-                            break
-                        end
-                    end
-                end
-                m.requires[r["logical-name"]] = {
-                    method = r["lookup-method"] or "by-name",
-                    path = p and path.translate(p) or nil,
-                    unique = r["unique-on-source-path"] or false
+        if rule.requires then
+            module.deps = {}
+            for _, dep in ipairs(rule.requires) do
+                local method = dep["lookup-method"] or "by-name"
+                local name = dep["logical-name"]
+                local headerunit = method:startswith("include")
+                local key = headerunit and support.get_headerunit_key(target, name)
+                module.deps[name] = {
+                    name = name,
+                    method = method,
+                    headerunit = headerunit,
+                    key = key,
+                    unique = dep["unique-on-source-path"] or false,
                 }
+                if method:startswith("include") then
+                    local sourcefile = dep["source-path"]
+                    headerunitsinfo = headerunitsinfo or {}
+                    table.insert(headerunitsinfo, {
+                        version = 0,
+                        revision = 0,
+                        sourcefile = path.normalize(sourcefile),
+                        rules = {{
+                            provides = {table.join(dep, {["is-headerunit"] = true})}
+                        }}
+                    })
+                end
             end
         end
     end
-    return modules
+    return module, headerunitsinfo
 end
 
 -- generate edges for DAG
-function _get_edges(nodes, modules)
+function _get_edges(target, nodes, modules)
+
+  profiler.enter(target:fullname(), "c++ modules", "scanner", "get module dependency graph edges")
   local edges = {}
-  local module_names = {}
   local name_filemap = {}
-  local named_module_names = hashset.new()
+  local deps_names = hashset.new()
   for _, node in ipairs(table.unique(nodes)) do
       local module = modules[node]
-      local module_name, _, cppfile = support.get_provided_module(module)
-      if module_name then
-          if named_module_names:has(module_name) then
-              raise("duplicate module name detected \"" .. module_name .. "\"\n    -> " .. cppfile .. "\n    -> " .. name_filemap[module_name])
+      if module.name then
+          if deps_names:has(module.name) then
+              raise("duplicate module name detected for \"" .. module.name .. "\"\n  <" .. target:fullname() .. "> -> " .. module.sourcefile .. "\n  <" .. target:fullname() .. "> -> " .. name_filemap[module.name])
           end
-          named_module_names:insert(module_name)
-          name_filemap[module_name] = cppfile
+          deps_names:insert(module.name)
+          name_filemap[module.name] = module.sourcefile
+      elseif module.headerunit then
+          deps_names:insert(module.name)
+          name_filemap[module.name] = module.sourcefile
       end
-      if module.requires then
-          for required_name, _ in table.orderpairs(module.requires) do
-              for _, required_node in ipairs(nodes) do
-                  local name, _, _ = support.get_provided_module(modules[required_node])
-                  if name and name == required_name then
-                      table.insert(edges, {required_node, node})
-                  end
+      for dep_name, _ in table.orderpairs(module.deps) do
+          for _, dep_node in ipairs(nodes) do
+              local dep_module = modules[dep_node]
+              if dep_module.name and dep_name == dep_module.name then
+                  table.insert(edges, {dep_node, node})
+                  break
               end
           end
       end
   end
+  profiler.leave(target:fullname(), "c++ modules", "scanner", "get module dependency graph edges")
   return edges
 end
 
-function _get_package_modules(target, package)
+-- get package modules
+function _get_package_modules(target, package, opt)
+    profiler.enter(target:fullname(), "c++ modules", "scanner", "get modules from package", package:name())
+    opt = opt or {}
     local package_modules
     local modulesdir = path.join(package:installdir(), "modules")
     local metafiles = os.files(path.join(modulesdir, "*", "*.meta-info"))
+    local jobs = jobgraph.new()
     for _, metafile in ipairs(metafiles) do
-        package_modules = package_modules or {}
-        local modulefile, name, metadata = _parse_meta_info(target, metafile)
-        local moduleonly = not package:libraryfiles()
-        package_modules[name] = {file = path.join(modulesdir, modulefile), metadata = metadata, external = {moduleonly = moduleonly}}
+        jobs:add("job/parse_meta_file/" .. metafile, function()
+            package_modules = package_modules or {}
+            local modulefile, _, metadata = _parse_meta_info(target, metafile)
+
+            local bmionly = package:libraryfiles() and true or false
+            package_modules[path.join(modulesdir, modulefile)] = {defines = metadata.defines,
+                                                                  undefines = metadata.undefines,
+                                                                  bmionly = bmionly,
+                                                                  external = opt.external and target:fullname()}
+        end)
     end
+    runjobs(format("parsing package %s module metafiles", package:name()), jobs, {comax = option.get("jobs") or os.default_njob()})
+    profiler.leave(target:fullname(), "c++ modules", "scanner", "get modules from package", package:name())
     return package_modules
 end
 
--- generate module dependencies
-function _generate_module_dependencies(target, jobgraph, sourcebatch, opt)
-    local parsejob = target:fullname() .. "/parse_module_dependencies"
-    jobgraph:add(parsejob, function (index, total, opt)
-        local changed = support.memcache():get2("modules", "dependencies_changed")
-        if changed then
-            local cachekey = target:fullname() .. "/" .. sourcebatch.rulename
-            local moduleinfos = support.load_moduleinfos(target, sourcebatch)
-            local modules = _parse_dependencies_data(target, moduleinfos)
-            support.localcache():set2("modules", cachekey, modules)
-            support.localcache():save()
-        end
-    end)
-    for _, sourcefile in ipairs(sourcebatch.sourcefiles) do
-        local jobname = target:fullname() .. "/generate_module_dependencies/" .. sourcefile
-        jobgraph:add(jobname, function (index, total, opt)
-            local changed = _scanner(target).generate_dependency_for(target, sourcefile, opt)
-            if changed then
-                support.memcache():set2("modules", "dependencies_changed", true)
-            end
-        end)
-        jobgraph:add_orders(jobname, parsejob)
+function _get_packages_for(target)
+    local packages = {}
+    for _, pkg in pairs(target:orderpkgs()) do
+        packages[pkg:name()] = {pkg = pkg, external = false}
     end
-end
-
--- get source modulefile for external target deps
-function _get_targetdeps_modules(target)
-    local sourcefiles
-    for _, dep in ipairs(target:orderdeps()) do
-        local sourcebatch = dep:sourcebatches()["c++.build.modules.builder"]
-        if sourcebatch and sourcebatch.sourcefiles then
-            for _, sourcefile in ipairs(sourcebatch.sourcefiles) do
-                local fileconfig = dep:fileconfig(sourcefile)
-                local public = (fileconfig and fileconfig.public and not fileconfig.external) or false
-                if public then
-                    sourcefiles = sourcefiles or {}
-                    table.insert(sourcefiles, sourcefile)
-                    target:fileconfig_add(sourcefile, {external = {moduleonly = dep:is_moduleonly()}})
-                end
-            end
+    for _, dep in pairs(target:orderdeps()) do
+        local dep_packages = _get_packages_for(dep)
+        for pkgname, package in pairs(dep_packages) do
+            packages[pkgname] = {pkg = package.pkg, external = package.external or dep}
         end
     end
-    return sourcefiles
+    return packages
 end
 
--- extract packages modules dependencies
-function _get_all_packages_modules(target)
-
+-- get packages modules
+function _get_packages_modules(target)
+    profiler.enter(target:fullname(), "c++ modules", "scanner", "get modules from package dependencies")
     -- parse all meta-info and append their informations to the package store
-    local packages = target:pkgs() or {}
-    for _, deps in ipairs(target:orderdeps()) do
-        table.join2(packages, deps:pkgs())
-    end
-
-    local packages_modules
-    for _, package in table.orderpairs(packages) do
-        local package_modules = _get_package_modules(target, package)
-        if package_modules then
-           packages_modules = packages_modules or {}
-           table.join2(packages_modules, package_modules)
+    local packages_modules = support.memcache():get2(target:fullname(), "cxx_packages_modules")
+    if not packages_modules then
+        packages_modules = {}
+        local packages = _get_packages_for(target)
+        for _, package in table.orderpairs(packages) do
+            local package_modules = _get_package_modules(package.external or target, package.pkg, {external = package.external})
+            if package_modules then
+               packages_modules = packages_modules or {}
+               table.join2(packages_modules, package_modules)
+            end
         end
+        support.memcache():set2(target:fullname(), "cxx_packages_modules", packages_modules)
     end
+    profiler.leave(target:fullname(), "c++ modules", "get modules from package dependencies")
     return packages_modules
 end
 
--- patch sourcebatch
-function _patch_sourcebatch(target, sourcebatch, opt)
+-- get target deps modules
+function _get_targetdeps_modules(target)
 
-    -- add target deps modules
-    if target:orderdeps() then
-        local deps_sourcefiles = _get_targetdeps_modules(target)
-        if deps_sourcefiles then
-            table.join2(sourcebatch.sourcefiles, deps_sourcefiles)
-        end
-    end
-
-    -- append std module
-    local std_modules = support.get_stdmodules(target)
-    if std_modules then
-        table.join2(sourcebatch.sourcefiles, std_modules)
-    end
-
-    -- extract packages modules dependencies
-    local package_modules_data = _get_all_packages_modules(target, opt)
-    if package_modules_data then
-        -- append to sourcebatch
-        for _, package_module_data in table.orderpairs(package_modules_data) do
-            table.insert(sourcebatch.sourcefiles, package_module_data.file)
-            target:fileconfig_set(package_module_data.file, {external = package_module_data.external, defines = package_module_data.metadata.defines})
-        end
-    end
-
-    -- patch objectfiles and dependencies
-    sourcebatch.sourcekind = "cxx"
-    sourcebatch.objectfiles = {}
-    sourcebatch.dependfiles = {}
-    for _, sourcefile in ipairs(sourcebatch.sourcefiles) do
-        local objectfile = target:objectfile(sourcefile)
-        table.insert(sourcebatch.objectfiles, objectfile)
-
-        local dependfile = target:dependfile(sourcefile or objectfile)
-        table.insert(sourcebatch.dependfiles, dependfile)
-    end
-end
-
--- get module dependencies
-function get_module_dependencies(target, sourcebatch)
-    local cachekey = target:fullname() .. "/" .. sourcebatch.rulename
-    local modules = support.localcache():get2("modules", cachekey)
-    assert(modules, "no module dependencies!")
-    return modules
-end
-
--- get headerunits info
-function get_headerunits(target, sourcebatch, modules)
-    local headerunits
-    local stl_headerunits
-    for _, objectfile in ipairs(sourcebatch.objectfiles) do
-        local m = modules[objectfile]
-        if m then
-            for name, r in pairs(m.requires) do
-                if r.method ~= "by-name" then
-                    local unittype = r.method == "include-angle" and ":angle" or ":quote"
-                    if stlheaders.is_stlheader(name) then
-                        stl_headerunits = stl_headerunits or {}
-                        if not table.find_if(stl_headerunits, function(i, v) return v.name == name end) then
-                            table.insert(stl_headerunits, {name = name, path = r.path, type = unittype, unique = r.unique})
+    profiler.enter(target:fullname(), "c++ modules", "scanner", "get modules from target dependencies")
+    local _, stdmodules_set = support.get_stdmodules(target)
+    local modules
+    for _, dep in ipairs(target:orderdeps()) do
+        local sourcebatches = dep:sourcebatches()
+        if sourcebatches and sourcebatches["c++.build.modules.scanner"] then
+            local sourcebatch = sourcebatches["c++.build.modules.scanner"]
+            if sourcebatch.sourcefiles then
+                for _, sourcefile in ipairs(sourcebatch.sourcefiles) do
+                    modules = modules or {}
+                    if support.is_public(dep, sourcefile) or stdmodules_set:has(sourcefile) then
+                        local _fileconfig = dep:fileconfig(sourcefile)
+                        local fileconfig = {}
+                        if _fileconfig then
+                            fileconfig.defines = _fileconfig.defines
+                            fileconfig.undefines = _fileconfig.undefines
+                            fileconfig.includedirs = _fileconfig.includedirs
                         end
-                    else
-                        headerunits = headerunits or {}
-                        if not table.find_if(headerunits, function(i, v) return v.name == name end) then
-                            table.insert(headerunits, {name = name, path = r.path, type = unittype, unique = r.unique})
+                        fileconfig.defines = table.join(fileconfig.defines or {}, dep:get("defines") or {})
+                        fileconfig.undefines = table.join(fileconfig.undefines or {}, dep:get("undefines") or {})
+                        fileconfig.includedirs = table.join(fileconfig.includedirs or {}, dep:get("includedirs") or {})
+                        if not dep:is_phony() then
+                            if target:namespace() == dep:namespace() then
+                                fileconfig.external = dep:name()
+                            else
+                                fileconfig.external = dep:fullname()
+                            end
+                            fileconfig.bmionly = not dep:is_moduleonly()
+                        end
+                        if not modules[sourcefile] then
+                            modules[sourcefile] = fileconfig
                         end
                     end
                 end
             end
         end
     end
-    return headerunits, stl_headerunits
+    profiler.leave(target:fullname(), "c++ modules", "scanner", "get modules from target dependencies")
+    return modules
+end
+
+-- check if flags are compatible for module reuse
+function _are_flags_compatible(target, other, sourcefile)
+
+    local compinst1 = target:compiler("cxx")
+    local flags1 = compinst1:compflags({sourcefile = sourcefile, target = target, sourcekind = "cxx"})
+
+    local compinst2 = other:compiler("cxx")
+    local flags2 = compinst2:compflags({sourcefile = sourcefile, target = other, sourcekind = "cxx"})
+
+    local strip_defines = not target:policy("build.c++.modules.reuse.strict") and
+                                   not target:policy("build.c++.modules.tryreuse.discriminate_on_defines")
+
+    -- strip unrelevent flags
+    flags1 = support.strip_flags(target, flags1, {strip_defines = strip_defines})
+    flags2 = support.strip_flags(target, flags2, {strip_defines = strip_defines})
+
+    if #flags1 ~= #flags2 then
+        return false
+    end
+
+    table.sort(flags1)
+    table.sort(flags2)
+
+    for i = 1, #flags1 do
+        if flags1[i] ~= flags2[i] then
+            return false
+        end
+    end
+    return true
+end
+
+function get_basegroup_for(target)
+    return target:fullname() .. "/modules"
+end
+
+function get_computedagjob_for(target)
+    return get_basegroup_for(target) .. "/computedag"
+end
+
+function get_scangroup_for(target)
+    return get_basegroup_for(target) .. "/scan"
+end
+
+function get_scanfilejob_for(target, sourcefile)
+    return get_scangroup_for(target) .. "/" .. sourcefile
+end
+
+function get_parsegroup_for(target)
+    return get_basegroup_for(target) .. "/parse"
+end
+
+function get_parsefilejob_for(target, sourcefile)
+    return get_parsegroup_for(target) .. "/" .. sourcefile
+end
+
+-- patch sourcebatch
+function _patch_sourcebatch(target, sourcebatch)
+
+    local memcache = support.memcache()
+    -- target deps modules
+    local depsmodules = _get_targetdeps_modules(target) or {}
+
+    -- package modules
+    local pkgmodules = _get_packages_modules(target) or {}
+
+    local externalmodules = table.join(depsmodules, pkgmodules)
+    local keys = #sourcebatch.sourcefiles > 0 and table.concat(sourcebatch.sourcefiles) or " "
+    keys = keys .. (#externalmodules > 0 and table.concat(table.orderkeys(externalmodules)) or " ")
+    local md5sum = hash.md5(bytes(keys))
+    local localcache = support.localcache()
+    local cached_patched_sourcebatch = localcache:get2(target:fullname(), "patched_sourcebatch")
+    if not cached_patched_sourcebatch or md5sum ~= cached_patched_sourcebatch.md5sum then
+        local reuse = target:policy("build.c++.modules.reuse") or
+                      target:policy("build.c++.modules.tryreuse")
+        local reused = {}
+        for sourcefile, fileconfig in pairs(externalmodules) do
+            if reuse and fileconfig.external then
+                local nocheck = target:policy("build.c++.modules.reuse.nocheck")
+                local strict = target:policy("build.c++.modules.reuse.strict") or
+                               target:policy("build.c++.modules.tryreuse.discriminate_on_defines")
+                local dep = target:dep(fileconfig.external)
+                assert(dep, "dep target <%s> for <%s> not found", fileconfig.external, target:fullname())
+
+                local can_reuse = nocheck or _are_flags_compatible(target, dep, sourcefile, {strict = strict})
+                if can_reuse then
+                    local _reused, from = support.is_reused(dep, sourcefile)
+                    if _reused then
+                        support.set_reused(target, from, sourcefile)
+                    else
+                        support.set_reused(target, dep, sourcefile)
+                    end
+                    table.insert(reused, sourcefile)
+                    if dep:is_moduleonly() then
+                        dep:data_set("cxx.modules.reused", true)
+                    end
+                end
+            end
+            table.insert(sourcebatch.sourcefiles, sourcefile)
+            target:fileconfig_add(sourcefile, fileconfig)
+            memcache:set2(target:fullname(), "modules.changed", true)
+        end
+        sourcebatch.sourcekind = "cxx"
+        sourcebatch.objectfiles = {}
+        sourcebatch.dependfiles = {}
+        for _, sourcefile in ipairs(sourcebatch.sourcefiles) do
+            local reused, from = support.is_reused(target, sourcefile)
+            local _target = reused and from or target
+            local objectfile = _target:objectfile(sourcefile)
+            local dependfile = _target:dependfile(sourcefile or objectfile)
+            table.insert(sourcebatch.dependfiles, dependfile)
+        end
+        localcache:set2(target:fullname(), "patched_sourcebatch", {sourcefiles = sourcebatch.sourcefiles, dependfiles = sourcebatch.dependfiles, reused = reused, md5sum = md5sum})
+    else
+        local reused = hashset.from(cached_patched_sourcebatch.reused)
+        for sourcefile, fileconfig in pairs(externalmodules) do
+            if reused:has(sourcefile) then
+                local dep = target:dep(fileconfig.external)
+                assert(dep, "dep target <%s> for <%s> not found", fileconfig.external, target:fullname())
+                local _reused, from = support.is_reused(dep, sourcefile)
+                if _reused then
+                    support.set_reused(target, from, sourcefile)
+                else
+                    support.set_reused(target, dep, sourcefile)
+                end
+                if dep:is_moduleonly() then
+                    dep:data_set("cxx.modules.reused", true)
+                end
+            end
+            target:fileconfig_add(sourcefile, fileconfig)
+        end
+        sourcebatch.sourcekind = "cxx"
+        sourcebatch.objectfiles = {}
+        sourcebatch.dependfiles = {}
+        for _, sourcefile in ipairs(sourcebatch.sourcefiles) do
+            local reused, from = support.is_reused(target, sourcefile)
+            local _target = reused and from or target
+            local objectfile = _target:objectfile(sourcefile)
+            local dependfile = _target:dependfile(objectfile)
+            table.insert(sourcebatch.dependfiles, dependfile)
+            sourcebatch.sourcekind = "cxx"
+            sourcebatch.dependfiles= cached_patched_sourcebatch.dependfiles
+            sourcebatch.sourcefiles = cached_patched_sourcebatch.sourcefiles
+            sourcebatch.objectfiles= cached_patched_sourcebatch.objectfiles
+        end
+    end
+end
+
+function _do_computedag(target, modules, sourcebatch)
+
+    profiler.enter(target:fullname(), "c++ modules", "scanner", "compute dag")
+    local localcache = support.localcache()
+    local memcache = support.memcache()
+    local changed = memcache:get2(target:fullname(), "modules.changed")
+    if changed then
+        localcache:set2(target:fullname(), "c++.modules", modules)
+        mapper.feed(target, modules, sourcebatch.sourcefiles)
+        -- check if a dependency is missing
+        local modules_names = hashset.from(table.keys(mapper.get_mapper_for(target)))
+        for _, module in pairs(modules) do
+            for dep_name, dep in pairs(module.deps) do
+                if dep.method == "by-name" then
+                    if not modules_names:has(dep_name) then
+                        if option.get("diagnosis") then
+                            print("parsing:", target:fullname(), "\nmodules:", modules or {})
+                        end
+                        raise("<%s> missing %s dependency for module %s", target:fullname(), dep_name, module.name or module.sourcefile)
+                    end
+                end
+            end
+        end
+        -- steal from c++.build sourcebatch named modules with cpp extensions
+        local sourcebatches = target:sourcebatches()
+        if sourcebatches and sourcebatches["c++.build"] then
+            local cxx_sourcebatch = sourcebatches["c++.build"]
+            cxx_sourcebatch.sourcefiles = {}
+            cxx_sourcebatch.dependfiles = {}
+            cxx_sourcebatch.objectfiles = {}
+            for _, sourcefile in ipairs(sourcebatch.sourcefiles) do
+                local module = modules[sourcefile]
+                local insert = true
+                if module then
+                    insert = not module.name
+                end
+
+                if insert then
+                    table.insert(cxx_sourcebatch.sourcefiles, sourcefile)
+                    local objectfile = target:objectfile(sourcefile)
+                    table.insert(cxx_sourcebatch.dependfiles, target:dependfile(objectfile))
+                    table.insert(cxx_sourcebatch.objectfiles, objectfile)
+                end
+            end
+            localcache:set2(target:fullname(), "c++.build.sourcebatch", cxx_sourcebatch)
+        end
+    else
+        modules = get_modules(target)
+        local cxx_sourcebatch_cached = localcache:get2(target:fullname(), "c++.build.sourcebatch")
+        if cxx_sourcebatch_cached then
+            local cxx_sourcebatch = target:sourcebatches()["c++.build"]
+            cxx_sourcebatch.sourcefiles = cxx_sourcebatch_cached.sourcefiles
+            cxx_sourcebatch.dependfiles = cxx_sourcebatch_cached.dependfiles
+            cxx_sourcebatch.objectfiles = cxx_sourcebatch_cached.objectfiles
+        end
+    end
+
+    -- sort modules
+    sort_modules_by_dependencies(target, modules)
+
+    -- save cache if all other target finished
+    local targets = memcache:get("targets")
+    targets[target:fullname()].finished_parsing = true
+
+    local save_cache = true
+    for _, _target in pairs(targets) do
+        if not _target.finished_parsing then
+            save_cache = false
+            break
+        end
+    end
+    if save_cache then
+        localcache:save()
+    end
+    profiler.leave(target:fullname(), "c++ modules", "scanner", "compute dag")
+    -- jobgraph:dump()
+end
+
+function _do_scan(target, sourcefile, opt)
+    profiler.enter(target:fullname(), "c++ modules", "scanner", "scan dependencies for", sourcefile)
+    local changed = _scanner(target).scan_dependency_for(target, sourcefile, opt)
+    if changed or not support.localcache():get2(target:fullname(), "module_mapper") then
+        support.memcache():set2(target:fullname(), "modules.changed", true)
+    end
+    profiler.leave(target:fullname(), "c++ modules", "scanner", "scan dependencies for", sourcefile)
+end
+
+-- scan module dependencies
+function _schedule_module_dependencies_scan(target, jobgraph, sourcebatch)
+
+    profiler.enter(target:fullname(), "c++ modules", "scanner", "schedule moduleinfo scanning, parsing and dag computation")
+    -- if XMAKE_IN_COMPILE_COMMANDS_PROJECT_GENERATOR is set, then we can just reuse scan artifacts from build
+    if not os.getenv("XMAKE_IN_COMPILE_COMMANDS_PROJECT_GENERATOR") or not support.localcache():get2(target:fullname(), "c++.modules") then
+        local memcache = support.memcache()
+        local scangroup = get_scangroup_for(target)
+        local has_scanjob = false
+        jobgraph:group(scangroup, function()
+            for _, sourcefile in ipairs(sourcebatch.sourcefiles) do
+                local reused, _ = support.is_reused(target, sourcefile)
+                if not reused then
+                    local scanfilejob = get_scanfilejob_for(target, sourcefile)
+                    if not jobgraph:has(scanfilejob) then
+                        has_scanjob = true
+                        jobgraph:add(scanfilejob, function(_, _, opt)
+                            _do_scan(target, sourcefile, opt)
+                        end)
+                    end
+                end
+            end
+        end)
+        local modules
+        local parsegroup = get_parsegroup_for(target)
+        jobgraph:group(parsegroup, function()
+            for _, sourcefile in ipairs(sourcebatch.sourcefiles) do
+                local parsefilejob = get_parsefilejob_for(target, sourcefile)
+                if not jobgraph:has(parsefilejob) then
+                    jobgraph:add(parsefilejob, function(_, _, opt)
+                        local changed = memcache:get2(target:fullname(), "modules.changed")
+                        if changed then
+                            modules = modules or {}
+                            local moduleinfo = support.load_moduleinfo(target, sourcefile)
+                            local module, headerunitsinfo = _parse_moduleinfo(target, moduleinfo)
+                            modules[module.sourcefile] = module
+                            for _, headerunitinfo in ipairs(headerunitsinfo) do
+                                local headerunit = _parse_moduleinfo(target, headerunitinfo)
+                                local key = headerunit.sourcefile .. headerunit.key
+                                if not modules[key] then
+                                    modules[key] = table.clone(headerunit)
+                                    modules[key].name = headerunit.sourcefile
+                                end
+                                local name = headerunit.name .. headerunit.key
+                                modules[name] = headerunit
+                                modules[name].alias = true
+                            end
+                        end
+                    end)
+                    local reused, from = support.is_reused(target, sourcefile)
+                    if reused then
+                        local scanfilejob = get_scanfilejob_for(from, sourcefile)
+                        if jobgraph:has(scanfilejob) then
+                            jobgraph:add_orders(scanfilejob, parsefilejob)
+                        else
+                            local jobdeps = memcache:get2(from:fullname(), "jobdeps") or {}
+                            jobdeps.parsefile = jobdeps.parsefile or {}
+                            jobdeps.parsefile[parsefilejob] = scanfilejob
+                            memcache:set2(from:fullname(), "jobdeps", jobdeps)
+                        end
+                    end
+                end
+            end
+        end)
+        local computedagjob = get_computedagjob_for(target)
+        jobgraph:add(computedagjob, function ()
+            _do_computedag(target, modules, sourcebatch)
+        end)
+        if has_scanjob then
+            jobgraph:add_orders(scangroup, parsegroup)
+        end
+        jobgraph:add_orders(parsegroup, computedagjob)
+        local jobdeps = memcache:get2(target:fullname(), "jobdeps")
+        if jobdeps then
+            for _, computedag in ipairs(jobdeps.computedag) do
+                if jobgraph:has(computedag) then
+                    jobgraph:add_orders(computedagjob, computedag)
+                end
+            end
+            for from, to in pairs(jobdeps.parsefile) do
+                if jobgraph:has(to) then
+                    jobgraph:add_orders(to, from)
+                end
+            end
+        end
+
+        for _, dep in ipairs(target:orderdeps()) do
+            local dep_computedagjob = get_computedagjob_for(dep)
+            if jobgraph:has(dep_computedagjob) then
+                jobgraph:add_orders(dep_computedagjob, computedagjob)
+            else
+                local jobdeps = memcache:get2(dep:fullname(), "jobdeps") or {}
+                jobdeps.computedag = jobdeps.computedag or {}
+                table.insert(jobdeps.computedag, computedagjob)
+                memcache:set2(dep:fullname(), "jobdeps", jobdeps)
+            end
+        end
+    end
+    profiler.leave(target:fullname(), "c++ modules", "scanner", "schedule moduleinfo scanning, parsing and dag computation")
+end
+
+-- get headerunits info
+function sort_headerunits(target, headerunits)
+    profiler.enter(target:fullname(), "c++ modules", "scanner", "sort headerunits")
+    local _headerunits
+    local stl_headerunits
+    for _, headerunit in ipairs(headerunits) do
+        local module = mapper.get(target, headerunit)
+        if stlheaders.is_stlheader(path.filename(module.name)) then
+            stl_headerunits = stl_headerunits or {}
+            table.insert(stl_headerunits, headerunit)
+        else
+            _headerunits = _headerunits or {}
+            table.insert(_headerunits, headerunit)
+        end
+    end
+    profiler.leave(target:fullname(), "c++ modules", "scanner", "sort headerunits")
+    return _headerunits, stl_headerunits
 end
 
 -- https://www.open-std.org/jtc1/sc22/wg21/docs/papers/2022/p1689r5.html
@@ -371,6 +688,8 @@ end
   ]
 }]]
 function fallback_generate_dependencies(target, jsonfile, sourcefile, preprocess_file)
+
+    profiler.enter(target:fullname(), "c++ modules", "fallback scanner", "scan module dependencies for", sourcefile)
     local output = {version = 1, revision = 0, rules = {}}
     local rule = {outputs = {jsonfile}}
     rule["primary-output"] = target:objectfile(sourcefile)
@@ -414,7 +733,7 @@ function fallback_generate_dependencies(target, jsonfile, sourcefile, preprocess
                 module_depname = module_depname:sub(2, -2)
                 module_dep["lookup-method"] = "include-quote"
                 module_dep["unique-on-source-path"] = true
-                module_dep["source-path"] = support.find_quote_header_file(target, sourcefile, module_depname)
+                module_dep["source-path"] = support.find_quote_header_file(sourcefile, module_depname)
             elseif module_depname:startswith("<") then
                 module_depname = module_depname:sub(2, -2)
                 module_dep["lookup-method"] = "include-angle"
@@ -429,7 +748,7 @@ function fallback_generate_dependencies(target, jsonfile, sourcefile, preprocess
     end
 
     if module_name_export or internal then
-        local outputdir = support.get_outputdir(target, sourcefile)
+        local outputdir = support.get_outputdir(target, sourcefile, {scan = true})
 
         local provide = {}
         provide["logical-name"] = module_name_export or module_name_private
@@ -445,106 +764,175 @@ function fallback_generate_dependencies(target, jsonfile, sourcefile, preprocess
     table.insert(output.rules, rule)
     local jsondata = json.encode(output)
     io.writefile(jsonfile, jsondata)
+    profiler.leave(target:fullname(), "c++ modules", "fallback scanner", "scan module dependencies for", sourcefile)
 end
 
 -- topological sort
-function sort_modules_by_dependencies(target, objectfiles, modules, opt)
-    local build_objectfiles = {}
-    local link_objectfiles = {}
-    local edges = _get_edges(objectfiles, modules)
-    local dag = graph.new(true)
-    for _, e in ipairs(edges) do
-        dag:add_edge(e[1], e[2])
-    end
-    local objectfiles_sorted, has_cycle = dag:topo_sort()
-    if has_cycle then
-        local cycle = dag:find_cycle()
-        if cycle then
-            local names = {}
-            for _, objectfile in ipairs(cycle) do
-                local name, _, cppfile = support.get_provided_module(modules[objectfile])
-                table.insert(names, name or cppfile)
+function sort_modules_by_dependencies(target, modules)
+
+    profiler.enter(target:fullname(), "c++ modules", "scanner", "compute module dependency dag")
+    local memcache = support.memcache()
+    local localcache = support.localcache()
+    local changed = memcache:get2(target:fullname(), "modules.changed")
+    local built_artifacts = localcache:get2(target:fullname(), "c++.modules.built_artifacts")
+    if changed or not built_artifacts then
+        local built_modules = {}
+        local built_headerunits = {}
+        local objectfiles = {}
+
+        -- feed the dag
+        local nodes = {}
+        for node, module in pairs(modules) do
+            table.insert(nodes, module.headerunit and node or module.sourcefile)
+        end
+        -- table.unique(nodes)
+        local edges = _get_edges(target, nodes, modules)
+        local dag = graph.new(true)
+        for _, e in ipairs(edges) do
+            dag:add_edge(e[1], e[2])
+        end
+        -- check if dag have dependency cycles and sort sourcefiles by dependencies
+        local sourcefiles_sorted, has_cycle = dag:topo_sort()
+        if has_cycle then
+            local cycle = dag:find_cycle()
+            if cycle then
+                local names = {}
+                for _, sourcefile in ipairs(cycle) do
+                    local module = modules[sourcefile]
+                    table.insert(names, module.name or module.sourcefile)
+                end
+                local module = modules[cycle[1]]
+                table.insert(names, module.name or module.sourcefile)
+                raise("circular modules dependency detected!\n%s", table.concat(names, "\n   -> import "))
             end
-            local name, _, cppfile = support.get_provided_module(modules[cycle[1]])
-            table.insert(names, name or cppfile)
-            raise("circular modules dependency detected!\n%s", table.concat(names, "\n   -> import "))
         end
-    end
-    objectfiles_sorted = table.reverse(objectfiles_sorted)
-    local objectfiles_sorted_set = hashset.from(objectfiles_sorted)
-    for _, objectfile in ipairs(objectfiles) do
-        if not objectfiles_sorted_set:has(objectfile) then
-            table.insert(objectfiles_sorted, objectfile)
-            objectfiles_sorted_set:insert(objectfile)
+        local sourcefiles_sorted_set = hashset.from(sourcefiles_sorted)
+        for sourcefile, _ in pairs(modules) do
+            if not sourcefiles_sorted_set:has(sourcefile) then
+                table.insert(sourcefiles_sorted, sourcefile)
+                sourcefiles_sorted_set:insert(sourcefile)
+            end
         end
-    end
-    local culleds
-    for _, objectfile in ipairs(objectfiles_sorted) do
-        local name, provide, cppfile = support.get_provided_module(modules[objectfile])
-        local fileconfig = target:fileconfig(cppfile)
-        local public
-        local external
-        local can_cull = true
-        if fileconfig then
-            public = fileconfig.public
-            external = fileconfig.external
-            can_cull = fileconfig.cull == nil and true or fileconfig.cull
-        end
-        can_cull = can_cull and target:policy("build.c++.modules.culling")
-        local insert = true
-        if provide then
-            insert = public or (not external or external.moduleonly)
-            if insert and not public and can_cull then
-                insert = false
-                local edges = dag:adjacent_edges(objectfile)
-                local public = fileconfig and fileconfig.public
-                if edges then
-                    for _, edge in ipairs(edges) do
-                        if edge:to() ~= objectfile and objectfiles_sorted_set:has(edge:to()) then
-                            insert = true
-                            break
+        -- prepare objectfiles list built by the target
+        local culleds
+        for _, sourcefile in ipairs(sourcefiles_sorted) do
+            local module = mapper.get(target, sourcefile)
+            local name = module.name
+            local is_named = name ~= nil
+            local sort = (is_named and (module.sourcealias or not module.alias)) or not is_named
+            if sort then
+                local insert = false
+                local reused, from = support.is_reused(target, sourcefile)
+
+                if is_named and not module.headerunit then -- named modules
+                    insert = not support.can_be_culled(target, sourcefile)
+
+                    -- if module is cullable (culling policy enabled and not a public module), try to cull
+                    if not insert then
+                        local edges = dag:adjacent_edges(sourcefile)
+                        if edges then
+                            for _, edge in ipairs(edges) do
+                                if edge:to() ~= sourcefile and sourcefiles_sorted_set:has(edge:to()) then
+                                    insert = true
+                                    break
+                                end
+                            end
                         end
                     end
+                else -- regular translation unit with import statements, always inserted
+                    insert = true
+                end
+
+                if insert then
+                    if reused then
+                        if not support.is_bmionly(target, sourcefile) or module.name == "std" or module.name == "std.compat" then
+                            local objectfile = from:objectfile(sourcefile)
+                            table.insert(objectfiles, tostring(objectfile))
+                        end
+                    elseif module.headerunit then
+                        table.insert(built_headerunits, sourcefile)
+                    else
+                        table.insert(built_modules, sourcefile)
+                        -- insert objectfile if module named and is not imported from a static / shared library or if from a C++ file with a c++ module extension
+                        -- if not so objectfile will be handled by c++.build rule
+                        if not support.is_bmionly(target, sourcefile) and (support.has_module_extension(sourcefile) or is_named) then
+                            local objectfile = target:objectfile(sourcefile)
+                            table.insert(objectfiles, tostring(objectfile))
+                        end
+                   end
+                elseif support.is_external(target, sourcefile) or module.headerunit or name == "std" or name == "std.compat" then
+                else
+                    sourcefiles_sorted_set:remove(sourcefile)
+                    culleds = culleds or {}
+                    culleds[target:fullname()] = culleds[target:fullname()] or {}
+                    table.insert(culleds[target:fullname()], format("%s -> %s", name, sourcefile))
                 end
             end
         end
-        if insert then
-            table.insert(build_objectfiles, objectfile)
-            table.insert(link_objectfiles, objectfile)
-        elseif external and not external.from_moduleonly then
-            table.insert(build_objectfiles, objectfile)
-        else
-            objectfiles_sorted_set:remove(objectfile)
-            if name ~= "std" and name ~= "std.compat" then
-                culleds = culleds or {}
-                culleds[target:fullname()] = culleds[target:fullname()] or {}
-                table.insert(culleds[target:fullname()], format("%s -> %s", name, cppfile))
+
+        -- if some named modules has been culled, notify the user
+        if culleds then
+            if option.get("verbose") then
+                local culled_strs = {}
+                for target_name, m in pairs(culleds) do
+                    table.insert(culled_strs, format("%s:\n        %s", target_name, table.concat(m, "\n        ")))
+                end
+                wprint("some modules have got culled, because it is not consumed by its target nor flagged as a public module with add_files(\"xxx.mpp\", {public = true})\n    %s",
+                       table.concat(culled_strs, "\n    "))
+            else
+                wprint("some modules have got culled, use verbose (-v) mode to more informations")
             end
         end
-    end
+        built_headerunits = table.unique(built_headerunits)
 
-    if culleds then
-        if option.get("verbose") then
-            local culled_strs = {}
-            for target_name, m in pairs(culleds) do
-                table.insert(culled_strs, format("%s:\n        %s", target_name, table.concat(m, "\n        ")))
-            end
-            wprint("some modules have got culled, because it is not consumed by its target nor flagged as a public module with add_files(\"xxx.mpp\", {public = true})\n    %s",
-                   table.concat(culled_strs, "\n    "))
-        else
-            wprint("some modules have got culled, use verbose (-v) mode to more informations")
-        end
+        built_artifacts = {modules = built_modules, headerunits = built_headerunits, objectfiles = objectfiles}
+        localcache:set2(target:fullname(), "c++.modules.built_artifacts", built_artifacts)
+        memcache:set2(target:fullname(), "modules.changed", false)
     end
-
-    return build_objectfiles, link_objectfiles
+    assert(built_artifacts, "shouldn't assert here, please open an issue")
+    profiler.leave(target:fullname(), "c++ modules", "scanner", "compute module dependency dag")
+    return built_artifacts.modules, built_artifacts.headerunits, built_artifacts.objectfiles
 end
 
-function main(target, jobgraph, sourcebatch, opt)
+function get_modules(target)
+    local modules = support.localcache():get2(target:fullname(), "c++.modules")
+    assert(modules, "no modules!")
+    return modules
+end
 
-    if target:data("cxx.has_modules") then
-        -- patch sourcebatch
-        _patch_sourcebatch(target, sourcebatch)
-        -- generate module dependencies
-        _generate_module_dependencies(target, jobgraph, sourcebatch, opt)
+function after_scan(target)
+    local sourcebatches = target:sourcebatches()
+    local sourcebatch_builder = sourcebatches and sourcebatches["c++.build.modules.builder"]
+    local sourcebatch_scanner = sourcebatches and sourcebatches["c++.build.modules.scanner"]
+    if sourcebatch_scanner then
+        sourcebatch_scanner.sourcefiles = {}
     end
+    if sourcebatch_builder then
+        sourcebatch_builder.sourcefiles = {}
+        sourcebatch_builder.dependfiles = {}
+        sourcebatch_builder.objectfiles = {}
+    end
+    if target:data("cxx.has_modules") then
+        if target:is_moduleonly() or target:is_phony() then
+            return
+        end
+        local compile_commands = os.getenv("XMAKE_IN_PROJECT_GENERATOR") and os.getenv("XMAKE_IN_COMPILE_COMMANDS_PROJECT_GENERATOR")
+        local need_objectfiles = not os.getenv("XMAKE_IN_PROJECT_GENERATOR") or compile_commands
+        if need_objectfiles then
+            local modules = get_modules(target)
+            local _, _, objectfiles = sort_modules_by_dependencies(target, modules)
+            assert(sourcebatch_builder)
+            sourcebatch_builder.objectfiles = objectfiles
+        end
+    end
+end
+
+function main(target, jobgraph, sourcebatch)
+    profiler.enter(target:fullname(), "c++ modules", "scanner", "scan")
+    local compile_commands = os.getenv("XMAKE_IN_PROJECT_GENERATOR") and os.getenv("XMAKE_IN_COMPILE_COMMANDS_PROJECT_GENERATOR")
+    if target:data("cxx.has_modules") and (not os.getenv("XMAKE_IN_PROJECT_GENERATOR") or compile_commands) then
+        _patch_sourcebatch(target, sourcebatch)
+        _schedule_module_dependencies_scan(target, jobgraph, sourcebatch)
+    end
+    profiler.leave(target:fullname(), "c++ modules", "scanner", "scan")
 end

@@ -109,11 +109,9 @@ function find_build_tools(opt)
     end
 
     local variables = {}
-    local VCToolsVersion
-    local vs_toolset = opt.vs_toolset
-    if vs_toolset and os.isdir(path.join(sdkdir, "VC/Tools/MSVC", vs_toolset)) then
-        VCToolsVersion = vs_toolset
-    else
+    local VCInstallDir = path.join(sdkdir, "VC")
+    local VCToolsVersion = opt.vs_toolset
+    if not VCToolsVersion or not os.isdir(path.join(VCInstallDir, "Tools/MSVC", VCToolsVersion)) then
         -- https://github.com/xmake-io/xmake/issues/6159
         local latest_toolset
         for _, dir in ipairs(os.dirs(path.join(sdkdir, "VC/Tools/MSVC/*"))) do
@@ -128,8 +126,9 @@ function find_build_tools(opt)
             return
         end
     end
+    variables.VCInstallDir = VCInstallDir
     variables.VCToolsVersion = VCToolsVersion
-    variables.VCToolsInstallDir = path.join(sdkdir, "VC/Tools/MSVC", VCToolsVersion)
+    variables.VCToolsInstallDir = path.join(VCInstallDir, "Tools/MSVC", VCToolsVersion)
 
     local WindowsSDKVersion
     local vs_sdkver = opt.vs_sdkver
@@ -145,10 +144,15 @@ function find_build_tools(opt)
     end
     variables.WindowsSDKVersion = WindowsSDKVersion
     variables.WindowsSdkDir = path.join(sdkdir, "Windows Kits/10")
+    variables.WindowsSdkBinPath = path.join(variables.WindowsSdkDir, "bin")
+    variables.WindowsSdkVerBinPath = path.join(variables.WindowsSdkBinPath, WindowsSDKVersion)
+    variables.ExtensionSdkDir = path.join(variables.WindowsSdkDir, "ExtensionSdkDir")
+    variables.UCRTVersion = WindowsSDKVersion
+    variables.UniversalCRTSdkDir = variables.WindowsSdkDir
 
     local includedirs = {
         path.join(variables.VCToolsInstallDir, "include"),
-        path.join(variables.VCToolsInstallDir, "atlmfc/include"),
+        path.join(variables.VCToolsInstallDir, "atlmfc", "include"),
         path.join(variables.WindowsSdkDir, "Include", WindowsSDKVersion, "ucrt"),
         path.join(variables.WindowsSdkDir, "Include", WindowsSDKVersion, "shared"),
         path.join(variables.WindowsSdkDir, "Include", WindowsSDKVersion, "um"),
@@ -158,8 +162,10 @@ function find_build_tools(opt)
 
     local linkdirs = {
         path.join(variables.VCToolsInstallDir, "lib"),
+        path.join(variables.VCToolsInstallDir, "atlmfc", "lib"),
         path.join(variables.WindowsSdkDir, "Lib", WindowsSDKVersion, "ucrt"),
         path.join(variables.WindowsSdkDir, "Lib", WindowsSDKVersion, "um"),
+        path.join(variables.WindowsSdkDir, "Lib", WindowsSDKVersion, "km"),
     }
 
     local archs = {
@@ -182,32 +188,42 @@ function find_build_tools(opt)
         if #lib ~= 0 then
             local vcvars = {
                 BUILD_TOOLS_ROOT = sdkdir,
+                VSInstallDir = sdkdir,
 
                 -- vs runs in a windows ctx, so the envsep is always ";"
                 INCLUDE = path.joinenv(includedirs, ';'),
                 LIB = path.joinenv(lib, ';'),
 
-                WindowsSdkDir = variables.WindowsSdkDir,
-                WindowsSDKVersion = WindowsSDKVersion,
-                VCToolsInstallDir = variables.VCToolsInstallDir,
                 VSCMD_ARG_HOST_ARCH = "x64",
+
+                VCInstallDir = variables.VCInstallDir,
+                VCToolsVersion = variables.VCToolsVersion,
+                VCToolsInstallDir = variables.VCToolsInstallDir,
+
+                WindowsSDKVersion = variables.WindowsSDKVersion,
+                WindowsSdkDir = variables.WindowsSdkDir,
+                WindowsSdkBinPath = variables.WindowsSdkBinPath,
+                WindowsSdkVerBinPath = variables.WindowsSdkVerBinPath,
+                ExtensionSdkDir = variables.ExtensionSdkDir,
+                UCRTVersion = variables.UCRTVersion,
+                UniversalCRTSdkDir = variables.UniversalCRTSdkDir,
             }
 
-            local buidl_tools_bin = {}
+            local build_tools_bin = {}
             local host_dir = "Host" .. vcvars.VSCMD_ARG_HOST_ARCH
             if is_host("windows") then
-                table.insert(buidl_tools_bin, path.join(vcvars.VCToolsInstallDir, "bin", host_dir, target_arch))
-                table.insert(buidl_tools_bin, path.join(vcvars.WindowsSdkDir, "bin", WindowsSDKVersion))
-                table.insert(buidl_tools_bin, path.join(vcvars.WindowsSdkDir, "bin", WindowsSDKVersion, "ucrt"))
+                table.insert(build_tools_bin, path.join(vcvars.VCToolsInstallDir, "bin", host_dir, target_arch))
+                table.insert(build_tools_bin, path.join(vcvars.WindowsSdkDir, "bin", WindowsSDKVersion))
+                table.insert(build_tools_bin, path.join(vcvars.WindowsSdkDir, "bin", WindowsSDKVersion, "ucrt"))
             elseif is_host("linux") then
                 -- for msvc-wine
-                table.insert(buidl_tools_bin, path.join(sdkdir, "bin", target_arch))
+                table.insert(build_tools_bin, path.join(sdkdir, "bin", target_arch))
             end
 
             vcvars.VSCMD_ARG_TGT_ARCH = target_arch
-            vcvars.BUILD_TOOLS_BIN = path.joinenv(buidl_tools_bin)
+            vcvars.BUILD_TOOLS_BIN = path.joinenv(build_tools_bin)
 
-            local PATH = buidl_tools_bin
+            local PATH = build_tools_bin
             table.join2(PATH, path.splitenv(os.getenv("PATH")))
             vcvars.PATH = path.joinenv(PATH)
 
@@ -475,15 +491,17 @@ function _find_vstudio(opt)
         -- find VC install path (and aux build path) using `vswhere` (for version >= 15.0)
         -- * version > 15.0 eschews registry entries; but `vswhere` (included with version >= 15.2) can be used to find VC install path
         -- ref: https://github.com/Microsoft/vswhere/blob/master/README.md @@ https://archive.is/mEmdu
-        local vswhere_VCAuxiliaryBuildDir = nil
-        local vswhere_Common7ToolsDir = nil
+        local vswhere_VCAuxiliaryBuildDir = {}
+        local vswhere_Common7ToolsDir = {}
         if (tonumber(version) >= 15) and vswhere then
             local vswhere_vrange = format("%s,%s)", version, (version + 1))
             -- build tools: https://github.com/microsoft/vswhere/issues/22 @@ https://aka.ms/vs/workloads
             local result = os.iorunv(vswhere.program, {"-products", "*", "-prerelease", "-property", "installationpath", "-version", vswhere_vrange})
             if result then
-                vswhere_VCAuxiliaryBuildDir = path.join(result:trim(), "VC", "Auxiliary", "Build")
-                vswhere_Common7ToolsDir = path.join(result:trim(), "Common7", "Tools")
+                for _, vc_path in ipairs(result:split("\n")) do
+                    table.insert(vswhere_VCAuxiliaryBuildDir, path.join(vc_path:trim(), "VC", "Auxiliary", "Build"))
+                    table.insert(vswhere_Common7ToolsDir, path.join(vc_path:trim(), "Common7", "Tools"))
+                end
             end
         end
 
@@ -498,8 +516,13 @@ function _find_vstudio(opt)
         if vsenvs[version] then
             table.insert(paths, format("$(env %s)\\..\\..\\VC", vsenvs[version]))
         end
-        if vswhere_VCAuxiliaryBuildDir and os.isdir(vswhere_VCAuxiliaryBuildDir) then
-            table.insert(paths, 1, vswhere_VCAuxiliaryBuildDir)
+        
+        if vswhere_VCAuxiliaryBuildDir then
+            for _, vc_path in ipairs(vswhere_VCAuxiliaryBuildDir) do
+                if os.isdir(vc_path) then
+                    table.insert(paths, 1, vc_path)
+                end
+            end
         end
         if version == "6.0" and os.arch() == "x64" then
             table.insert(paths, "$(reg HKEY_LOCAL_MACHINE\\SOFTWARE\\WOW6432Node\\Microsoft\\DevStudio\\6.0\\Products\\Microsoft Visual C++;ProductDir)\\Bin")
@@ -541,8 +564,12 @@ function _find_vstudio(opt)
                 format("$(reg HKEY_LOCAL_MACHINE\\SOFTWARE\\Microsoft\\VisualStudio\\SxS\\VS7;%s)\\Common7\\Tools", version),
                 format("$(reg HKEY_LOCAL_MACHINE\\SOFTWARE\\Wow6432Node\\Microsoft\\VisualStudio\\SxS\\VS7;%s)\\Common7\\Tools", version)
             }
-            if vswhere_Common7ToolsDir and os.isdir(vswhere_Common7ToolsDir) then
-                table.insert(paths, 1, vswhere_Common7ToolsDir)
+            if vswhere_Common7ToolsDir then
+                for _, vc_path in ipairs(vswhere_Common7ToolsDir) do
+                    if os.isdir(vc_path) then
+                        table.insert(paths, 1, vc_path)
+                    end
+                end
             end
             vcvarsall = find_file("VsDevCmd.bat", paths)
         end
