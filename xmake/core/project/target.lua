@@ -286,7 +286,26 @@ function _instance:_build_deps()
 	            if depinherit == nil then
 	                depinherit = t:extraconf("deps", dep:fullname(), "inherit")
 	            end
-	            return depinherit == nil or depinherit
+
+	            if depinherit == nil then
+                    depinherit = "public"
+                elseif type(depinherit) == "boolean" then
+                    depinherit =  depinherit == true and "public" or "private"
+                end
+
+                -- return walk, insert
+                -- it works with -Wl,-no-undefined
+                if self == t then
+                    return ((self:is_binary() or self:is_shared()) and (depinherit == "private" or depinherit == "interface" or depinherit == "public")), (depinherit == "private" or depinherit == "public")
+                else
+                    return (not (t:is_binary() or (t:is_shared() and depinherit == "private"))), (not (t:is_binary() or (t:is_shared() and depinherit == "private")))
+                end
+                -- TODO default ld only binary need a and so which allow link parallel
+--                 if self == t then
+--                     return ((self:is_binary()) and (depinherit == "private" or depinherit == "interface" or depinherit == "public")), (depinherit == "private" or depinherit == "public")
+--                 else
+--                     return (not (t:is_binary()), (not (t:is_binary())
+--                 end
 	        end)
         end
     end
@@ -299,9 +318,8 @@ end
 
 -- get values from target deps with {interface|public = ...}
 function _instance:_get_from_deps(name, result_values, result_sources, opt)
-    local orderdeps = self:orderdeps({inherit = (name ~= "links" and name ~= "linkdirs")})
+    local orderdeps = self:orderdeps({inherit = true})
     local total = #orderdeps
-    -- print(self:name(), total)
     for idx, _ in ipairs(orderdeps) do
         local dep = orderdeps[total + 1 - idx]
         local values = dep:get(name, opt)

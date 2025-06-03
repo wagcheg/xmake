@@ -56,8 +56,10 @@ function instance_deps.load_deps(instance, instances, deps, orderdeps, depspath,
             if depinst then
                 deps[depname] = depinst
                 local continue_walk = true
+                local insert = true
                 if walkdep then
-                    continue_walk = walkdep(instance, depinst)
+                    continue_walk, insert = walkdep(instance, depinst)
+                    insert = insert or continue_walk
                 end
                 if continue_walk then
                     local depspath_sub
@@ -71,8 +73,12 @@ function instance_deps.load_deps(instance, instances, deps, orderdeps, depspath,
                         end
                         depspath_sub = table.join(depspath, depname)
                     end
-                    instance_deps.load_deps(depinst, instances, deps, orderdeps, depspath_sub, walkdep)
-                    table.insert(orderdeps, depinst)
+                    if continue_walk then
+                        instance_deps.load_deps(depinst, instances, deps, orderdeps, depspath_sub, walkdep)
+                    end
+                    if insert then
+                        table.insert(orderdeps, depinst)
+                    end
                 end
             end
         end

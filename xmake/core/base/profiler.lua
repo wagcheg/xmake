@@ -186,7 +186,7 @@ end
 function profiler:start()
     if self:is_flamegraph() then
         _G._perffile = _G._perffile or io.open("perf.fold", "w")
-        debug.sethook(profiler._flamegraph_handler, 'cr', 0)
+        debug.sethook(profiler._flamegraph_handler, '', 10000)
     elseif self:is_trace() then
         debug.sethook(profiler._tracing_handler, 'cr', 0)
     elseif self:is_perf("call") then
