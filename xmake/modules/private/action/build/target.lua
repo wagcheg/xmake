@@ -387,7 +387,7 @@ function add_targetjobs_and_deps_without_orders(jobgraph, target, targetrefs, op
     local targetname = target:fullname()
     targetrefs[targetname] = target
     add_targetjobs(jobgraph, target, opt)
-    for _, dep in ipairs(self:orderdeps({inherit = true})) do
+    for _, dep in ipairs(target:orderdeps({inherit = false})) do
         local depname = dep:name()
         if not targetrefs[depname] then
             add_targetjobs_and_deps_without_orders(jobgraph, dep, targetrefs, opt)
@@ -397,9 +397,14 @@ end
 
 -- add target orders for the given target and deps
 function add_target_and_deps_orders(jobgraph, target, opt)
-    local targetname = target:fullname()
-    for _, dep in ipairs(self:orderdeps({inherit = true})) do
-        _add_targetjobs_orders(jobgraph, target, dep, opt)
+    for _, dep in ipairs(target:orderdeps()) do
+        _add_targetjobs_plain_orders(jobgraph, target, dep, opt)
+    end
+
+    -- we need to pass to the whole dependency chain
+    -- @see https://github.com/xmake-io/xmake/issues/6586
+    for _, dep in ipairs(target:orderdeps()) do
+        _add_targetjobs_deep_orders(jobgraph, target, dep, opt)
     end
 end
 
@@ -407,6 +412,9 @@ end
 function get_targetjobs(targets_root, opt)
     local jobgraph = async_jobgraph.new(opt.job_kind)
     local targetrefs = {}
+--     for _, target in ipairs(targets_root) do
+--         add_targetjobs_and_deps(jobgraph, target, targetrefs, opt)
+--     end
     for _, target in ipairs(targets_root) do
         add_targetjobs_and_deps_without_orders(jobgraph, target, targetrefs, opt)
     end

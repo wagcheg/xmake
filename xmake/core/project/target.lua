@@ -258,7 +258,7 @@ function _instance:_build_deps()
         self._ORDERDEPS   = self._ORDERDEPS or {}
         self._INHERITDEPS = self._INHERITDEPS or {}
 
-        instance_deps.load_deps(self, instances, self._DEPS, self._ORDERDEPS, {self:fullname()})
+--         instance_deps.load_deps(self, instances, self._DEPS, self._ORDERDEPS, {self:fullname()})
         -- @see https://github.com/xmake-io/xmake/issues/4689
         instance_deps.load_deps(self, instances, {}, self._INHERITDEPS, {self:fullname()}, function (t, dep)
             local depinherit = t:extraconf("deps", dep:name(), "inherit")
@@ -285,6 +285,8 @@ function _instance:_build_deps()
 --                     return (not (t:is_binary()), (not (t:is_binary())
 --                 end
         end)
+        self._DEPS = self._INHERITDEPS
+        self._ORDERDEPS = self._INHERITDEPS
     end
 end
 
