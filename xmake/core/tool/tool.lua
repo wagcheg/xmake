@@ -167,7 +167,11 @@ function _instance:has_flags(flags, flagkind, opt)
 
     -- bind the run environments
     opt.envs = self:runenvs()
-
+    if self:program() and self:name() then
+        opt.tool = {}
+        opt.tool.program = self:program()
+        opt.tool.name = self:name()
+    end
     -- has flags?
     return self._has_flags(self:name(), flags, opt)
 end

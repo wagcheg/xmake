@@ -58,7 +58,7 @@ function _do_link_target(target, opt)
         end
 
     end, {dependfile = target:dependfile(),
-          lastmtime = os.mtime(target:targetfile()),
+          lastmtime = depend.time_compare(os.mtime(target:targetfile()), os.mtime(target:dependfile())),
           changed = target:is_rebuilt() or option.get("linkonly"),
           values = depvalues, files = depfiles, dryrun = dryrun})
 end

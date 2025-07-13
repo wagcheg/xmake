@@ -67,43 +67,49 @@ rule("qt.moc")
         -- add commands
         batchcmds:show_progress(opt.progress, "${color.build.object}compiling.qt.moc %s", sourcefile)
 
-        -- get values from target
-        -- @see https://github.com/xmake-io/xmake/issues/3930
-        local function _get_values_from_target(target, name)
-            local values = {}
-            for _, value in ipairs((target:get_from(name, "*"))) do
-                table.join2(values, value)
+        local flags = target:get("qt.moc.target_flags") or {}
+        if #flags == 0 then
+            -- get values from target
+            -- @see https://github.com/xmake-io/xmake/issues/3930
+            local function _get_values_from_target(target, name)
+                local values = {}
+                for _, value in ipairs((target:get_from(name, "*"))) do
+                    table.join2(values, value)
+                end
+                return table.unique(values)
             end
-            return table.unique(values)
-        end
 
-        -- generate c++ source file for moc
-        local flags = {}
-        table.join2(flags, compiler.map_flags("cxx", "define", _get_values_from_target(target, "defines")))
-        local pathmaps = {
-            {"includedirs", "includedir"},
-            {"sysincludedirs", "includedir"}, -- for now, moc process doesn't support MSVC external includes flags and will fail
-            {"frameworkdirs", "frameworkdir"}
-        }
-        for _, pathmap in ipairs(pathmaps) do
-            for _, item in ipairs(_get_values_from_target(target, pathmap[1])) do
-                local pathitem = path(item, function (p)
-                    local item = table.unwrap(compiler.map_flags("cxx", pathmap[2], p))
-                    if item then
-                        -- we always need use '/' to fix it for project generator, because it will use path.translate in cl.lua
-                        item = item:gsub("\\", "/")
+            -- generate c++ source file for moc
+            table.join2(flags, compiler.map_flags("cxx", "define", _get_values_from_target(target, "defines")))
+            local pathmaps = {
+                {"includedirs", "includedir"},
+                {"sysincludedirs", "includedir"}, -- for now, moc process doesn't support MSVC external includes flags and will fail
+                {"frameworkdirs", "frameworkdir"}
+            }
+            for _, pathmap in ipairs(pathmaps) do
+                for _, item in ipairs(_get_values_from_target(target, pathmap[1])) do
+                    local pathitem = path(item, function (p)
+                        local item = table.unwrap(compiler.map_flags("cxx", pathmap[2], p))
+                        if item then
+                            -- we always need use '/' to fix it for project generator, because it will use path.translate in cl.lua
+                            item = item:gsub("\\", "/")
+                        end
+                        return item
+                    end)
+                    if not pathitem:empty() then
+                        table.insert(flags, pathitem)
                     end
-                    return item
-                end)
-                if not pathitem:empty() then
-                    table.insert(flags, pathitem)
                 end
             end
+            target:set("qt.moc.target_flags", flags)
         end
+
         local user_flags = target:get("qt.moc.flags") or {}
         batchcmds:mkdir(path.directory(sourcefile_moc))
-        batchcmds:vrunv(moc, table.join(user_flags, flags, path(sourcefile), "-o", path(sourcefile_moc)))
-
+        local argv = table.join(user_flags, flags, path(sourcefile), "-o", path(sourcefile_moc))
+        batchcmds:vrunv(moc, argv)
+        batchcmds:add_depvalues(moc)
+        batchcmds:add_depvalues(os.args(argv))
         -- we need to compile this moc_xxx.cpp file if exists Q_PRIVATE_SLOT, @see https://github.com/xmake-io/xmake/issues/750
         local mocdata = io.readfile(sourcefile)
         if mocdata and mocdata:find("Q_PRIVATE_SLOT") or sourcefile_moc:endswith(".moc") then

@@ -171,6 +171,7 @@ function builder:_add_flags_from_flagkind(flags, target, flagkind, opt)
                 local flagconf = extraconf[flag]
                 -- @note we need join the single flag with shallow mode, aboid expand table values
                 -- e.g. add_cflags({"-I", "/tmp/xxx foo"}, {force = true, expand = false})
+                local flagconf = extraconf[flag]
                 if flagconf and flagconf.force then
                     table.shallow_join2(flags, flag)
                 else
@@ -272,7 +273,7 @@ function builder:_add_flags_from_target(flags, target)
         end
         cache[key] = targetflags
     end
-    table.join2(flags, targetflags)
+    table.vjoin2(flags, targetflags)
 end
 
 -- add flags from the argument option
@@ -715,11 +716,13 @@ function builder:_preprocess_flags(flags)
     local count = #flags
     if count > 1 then
         local flags_new = {}
+        local newidx = 0
         for idx = count, 1, -1 do
             local flag = flags[idx]
             local flagkey = type(flag) == "table" and table.concat(flag, "") or flag
             if flag and not unique[flagkey] then
-                table.insert(flags_new, flag)
+                newidx = newidx + 1
+                flags_new[newidx] = flag
                 unique[flagkey] = true
             end
         end
@@ -729,6 +732,7 @@ function builder:_preprocess_flags(flags)
 
     -- remove repeat first and split flags group, e.g. "-I /xxx" => {"-I", "/xxx"}
     local results = {}
+    local resultidx = 0
     if count > 0 then
         for idx = count, 1, -1 do
             local flag = flags[idx]
@@ -736,16 +740,22 @@ function builder:_preprocess_flags(flags)
                 flag = flag:trim()
                 if #flag > 0 then
                     if flag:find(" ", 1, true) then
-                        table.join2(results, os.argv(flag, {splitonly = true}))
+                        for _, subflag in ipairs(os.argv(flag, {splitonly = true})) do
+                            resultidx = resultidx + 1
+                            results[resultidx] = subflag
+                        end
                     else
-                        table.insert(results, flag)
+                        resultidx = resultidx + 1
+                        results[resultidx] = flag
                     end
                 end
             else
                 -- may be a table group? e.g. {"-I", "/xxx"}
                 if #flag > 0 then
-                    table.wrap_unlock(flag)
-                    table.join2(results, flag)
+                    for _, subflag in ipairs(flag) do
+                        resultidx = resultidx + 1
+                        results[resultidx] = subflag
+                    end
                 end
             end
         end

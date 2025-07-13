@@ -20,6 +20,7 @@
 
 -- imports
 import("core.base.option")
+import("core.cache.localcache")
 import("core.project.project")
 
 -- load depfiles
@@ -57,12 +58,16 @@ function load(dependfile, opt)
         local dependinfo = try { function() return io.load(dependfile) end }
         if dependinfo then
             -- attempt to load depfiles from the compilers
-            local depfiles = dependinfo.depfiles
-            if depfiles then
-                local depfiles_parser = _get_depfiles_parser(dependinfo.depfiles_format)
-                _load_depfiles(depfiles_parser, dependinfo, depfiles, opt)
-                dependinfo.depfiles = nil
+            local notloadfiles = (opt ~= nil and opt.notloadfiles ~= nil) and opt.notloadfiles or notloadfiles(dependfile)
+            if not notloadfiles then
+                local depfiles = dependinfo.depfiles
+                if depfiles then
+                    local depfiles_parser = _get_depfiles_parser(dependinfo.depfiles_format)
+                    _load_depfiles(depfiles_parser, dependinfo, depfiles, opt)
+                    dependinfo.depfiles = nil
+                end
             end
+            dependinfo.dependfile = dependfile
             return dependinfo
         end
     end
@@ -82,9 +87,71 @@ function _is_show_diagnosis_info()
     return show
 end
 
+function _normailize_path(dep)
+    local projectdir = os.projectdir()
+    dep = path.normalize(dep)
+    if path.is_absolute(dep) then
+        dep = path.translate(dep)
+    else
+        dep = path.absolute(dep, projectdir)
+    end
+    return is_plat("windows") and string.upper(dep) or dep
+end
+
 -- save dependent info to file
 function save(dependinfo, dependfile)
+    local dependfile_normailize = _normailize_path(dependfile)
+    local depfiles = dependinfo.depfiles
+    local files = dependinfo.files
+    dependinfo.files = nil
+    if depfiles then
+        local depfiles_parser = _get_depfiles_parser(dependinfo.depfiles_format)
+        _load_depfiles(depfiles_parser, dependinfo, depfiles, opt)
+        dependinfo.depfiles = nil
+        dependinfo.depfiles_format = nil
+    end
+
+    if dependinfo.files then
+        local maxindex = localcache.get2("depend", "log", "maxindex") or 1
+        local dependfileindex = localcache.get2("depend", "log", dependfile_normailize) or maxindex
+    
+        local deps = localcache.get("depend", "deps")
+        for dep, depinfo in pairs(deps) do
+            for lastmtime, dependfiles in pairs(depinfo) do
+                if dependfiles then
+                    dependfiles[dependfileindex] = nil
+                end
+            end
+        end
+        for _, file in ipairs(dependinfo.files) do
+            local mtime =  os.mtime(file)
+            file = _normailize_path(file)
+            local dependfiles = localcache.get3("depend", "deps", file, mtime)
+            if dependfiles == nil then
+                dependfiles = {}
+                dependfiles[dependfileindex] = true
+                localcache.set3("depend", "deps", file, mtime, dependfiles)
+            else
+                dependfiles[dependfileindex] = true
+            end
+        end
+        localcache.set2("depend", "log", dependfile_normailize, dependfileindex)
+        maxindex = maxindex + 1
+        localcache.set2("depend", "log", "maxindex", maxindex)
+
+        dependneedsave = dependneedsave and dependneedsave + 1 or 0
+    end
+
+    dependinfo.files = files
     io.save(dependfile, dependinfo)
+
+    for _, file in ipairs(table.wrap(dependinfo.outputs)) do
+        filechanged(file)
+    end
+
+    if dependneedsave and dependneedsave % 100 == 0 then
+        localcache.save("depend")
+    end
 end
 
 -- Is the dependent info changed?
@@ -94,11 +161,17 @@ end
 -- end
 --
 function is_changed(dependinfo, opt)
+    if is_quickchanged(dependinfo.dependfile) then
+        return true
+    end
 
     -- empty depend info? always be changed
     local files = table.wrap(dependinfo.files)
     local values = table.wrap(dependinfo.values)
     if #files == 0 and #values == 0 then
+        if _is_show_diagnosis_info() then
+            cprint("${color.warning}[check_build_deps]: files and values are empty")
+        end
         return true
     end
 
@@ -134,6 +207,9 @@ function is_changed(dependinfo, opt)
     local depvalues = values
     local optvalues = table.wrap(opt.values)
     if #depvalues ~= #optvalues then
+        if _is_show_diagnosis_info() then
+            cprint("${color.warning}[check_build_deps]: values count mismatch, old: %s, new: %s", #depvalues, optvalues)
+        end
         return true
     end
     for idx, depvalue in ipairs(depvalues) do
@@ -141,6 +217,9 @@ function is_changed(dependinfo, opt)
         local deptype = type(depvalue)
         local opttype = type(optvalue)
         if deptype ~= opttype then
+            if _is_show_diagnosis_info() then
+                cprint("${color.warning}[check_build_deps]: value %s != %s", depvalue, optvalue)
+            end
             return true
         elseif deptype == "string" and depvalue ~= optvalue then
             if _is_show_diagnosis_info() then
@@ -160,9 +239,12 @@ function is_changed(dependinfo, opt)
     end
 
     -- check whether the dependent files list are changed
-    if opt.files then
+    if opt.files and dependinfo.files then
         local optfiles = table.wrap(opt.files)
         if #files ~= #optfiles then
+            if _is_show_diagnosis_info() then
+                cprint("${color.warning}[check_build_deps]: files count mismatch, old: %s, new: %s", #files, #optfiles)
+            end
             return true
         end
         for idx, file in ipairs(files) do
@@ -174,6 +256,11 @@ function is_changed(dependinfo, opt)
             end
         end
     end
+end
+
+-- dependfile must be last or else targetfile is corruption
+function time_compare(before, after)
+    return (before > after) and 0 or before
 end
 
 -- on changed for the dependent files and values
@@ -233,5 +320,75 @@ function on_changed(callback, opt)
         dependinfo.values = dependinfo.values or {}
         table.join2(dependinfo.values, opt.values)
     end
+    dependinfo.outputs = dependinfo.outputs or {}
+    table.join2(dependinfo.outputs, opt.outputs)
     save(dependinfo, dependfile)
+end
+
+function is_quickchanged(dependfile)
+    dependfile = _normailize_path(dependfile)
+    local dependfileindex = localcache.get2("depend", "log", dependfile)
+    local loged = dependfileindex
+    local fileschanged = false
+    if loged then
+        _init_quickchanged()
+        fileschanged = changeddependfile[dependfileindex]
+    end
+
+    local quickchanged = loged and fileschanged
+    if quickchanged then
+        if _is_show_diagnosis_info() then
+            cprint("${color.warning}[check_build_deps]: quickly check file %s is changed, mtime: %s, lastmtime: %s", quickchanged.file, quickchanged.mtime, quickchanged.lastmtime)
+        end
+    end
+    return quickchanged
+end
+
+function notloadfiles(dependfile)
+    dependfile = _normailize_path(dependfile)
+    local dependfileindex = localcache.get2("depend", "log", dependfile)
+    local loged = dependfileindex
+    local fileschanged = false
+    if loged then
+        _init_quickchanged()
+        fileschanged = changeddependfile[dependfileindex]
+    end
+
+    return loged and not fileschanged
+end
+
+function _init_quickchanged()
+    if not changeddependfile then
+        changeddependfile = {}
+        local deps = localcache.get("depend", "deps")
+        for dep, depinfo in pairs(deps) do
+            local mtime = os.mtime(dep)
+            for lastmtime, dependfiles in pairs(depinfo) do
+                if lastmtime ~= mtime then
+                    for dependfileindex, v in pairs(dependfiles) do
+                        changeddependfile[dependfileindex] = {file = dep, mtime = mtime, lastmtime = lastmtime}
+                    end
+                end
+            end
+        end
+    end
+end
+
+function needsave()
+    return dependneedsave
+end
+
+function filechanged(dep)
+    if changeddependfile then
+        dep = _normailize_path(dep)
+        local depinfo = localcache.get2("depend", "deps", dep)
+        local mtime = os.mtime(dep)
+        for lastmtime, dependfiles in pairs(depinfo) do
+            if lastmtime ~= mtime then
+                for dependfileindex, v in pairs(dependfiles) do
+                    changeddependfile[dependfileindex] = {file = dep, mtime = mtime, lastmtime = lastmtime}
+                end
+            end
+        end
+    end
 end

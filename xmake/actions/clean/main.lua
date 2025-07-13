@@ -21,6 +21,7 @@
 -- imports
 import("core.base.option")
 import("core.base.task")
+import("core.cache.localcache")
 import("core.project.rule")
 import("core.project.config")
 import("core.base.global")
@@ -171,6 +172,9 @@ function main()
 
     -- clean target
     _clean(targetname)
+
+    localcache.clear("depend")
+    localcache.save("depend")
 
     -- unlock the whole project
     project.unlock()

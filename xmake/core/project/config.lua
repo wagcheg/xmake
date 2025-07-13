@@ -146,6 +146,16 @@ function config.builddir(opt)
 
     -- get the absolute path first
     opt = opt or {}
+    if not opt.absolute then
+        if _G._builddir then
+            return _G._builddir
+        end
+    else
+        if _G._absolutebuilddir then
+            return _G._absolutebuilddir
+        end
+    end
+
     local rootdir
     -- we always switch to independent working directory if `-P/-F` is set
     -- @see https://github.com/xmake-io/xmake/issues/3342
@@ -168,6 +178,9 @@ function config.builddir(opt)
     -- adjust path for the current directory
     if not opt.absolute then
         builddir = path.relative(builddir, os.curdir())
+        _G._builddir = builddir
+    else
+        _G._absolutebuilddir = builddir
     end
     return builddir
 end
