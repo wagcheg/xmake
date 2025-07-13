@@ -55,7 +55,7 @@ function get_target_buildcmds(target, opt)
             return ""
         end
     })
-    local buildcmds = batchcmds.new({target = target})
+    local buildcmds = batchcmds.new({target = target, generator = true})
     local jobgraph = target_buildutils.get_targetjobs({target}, {
         job_kind = "build",
         for_generator = true,

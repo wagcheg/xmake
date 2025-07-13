@@ -22,7 +22,7 @@ rule("qt.env")
     on_config(function (target)
 
         -- imports
-        import("detect.sdks.find_qt")
+        import("detect.sdks.find_qt")()
 
         -- find qt sdk
         local qt = target:data("qt")

@@ -56,7 +56,11 @@ end
 function _runcmd_runv(cmd, opt)
     if cmd.program then
         if not opt.dryrun then
-            os.runv(cmd.program, cmd.argv, cmd.opt)
+            if cmd.opt and cmd.opt.func and opt.depinfo then
+                cmd.opt.func(opt.depinfo)
+            else
+                os.runv(cmd.program, cmd.argv, cmd.opt)
+            end
         end
     end
 end
@@ -67,7 +71,11 @@ function _runcmd_vrunv(cmd, opt)
         if opt.dryrun then
             vprint(os.args(table.join(cmd.program, cmd.argv)))
         else
-            os.vrunv(cmd.program, cmd.argv, cmd.opt)
+            if cmd.opt and cmd.opt.func and opt.depinfo then
+                cmd.opt.func(opt.depinfo)
+            else
+                os.vrunv(cmd.program, cmd.argv, cmd.opt)
+            end
         end
     end
 end
@@ -76,7 +84,11 @@ end
 function _runcmd_execv(cmd, opt)
     if cmd.program then
         if not opt.dryrun then
-            os.execv(cmd.program, cmd.argv, cmd.opt)
+            if cmd.opt and cmd.opt.func and opt.depinfo then
+                cmd.opt.func(opt.depinfo)
+            else
+                os.execv(cmd.program, cmd.argv, cmd.opt)
+            end
         end
     end
 end
@@ -87,7 +99,11 @@ function _runcmd_vexecv(cmd, opt)
         if opt.dryrun then
             vprint(os.args(table.join(cmd.program, cmd.argv)))
         else
-            os.vexecv(cmd.program, cmd.argv, cmd.opt)
+            if cmd.opt and cmd.opt.func and opt.depinfo then
+                cmd.opt.func(opt.depinfo)
+            else
+                os.vexecv(cmd.program, cmd.argv, cmd.opt)
+            end
         end
     end
 end
@@ -314,11 +330,26 @@ function batchcmds:compile(sourcefiles, objectfile, opt)
     if not sourcekind and (type(sourcefiles) == "string" or path.instance_of(sourcefiles)) then
         sourcekind = language.sourcekind_of(tostring(sourcefiles))
     end
-    local compiler_inst = compiler.load(sourcekind, opt)
-    local _, argv = compiler_inst:compargv(sourcefiles, path(objectfile), opt)
 
+    local argv
+    local compiler_inst = compiler.load(sourcekind, opt)
+    if self.generator then
+        _, argv = compiler_inst:compargv(sourcefiles, path(objectfile), opt)
+        self:mkdir(path.directory(objectfile))
+    else
+        opt.func = function(depinfo)
+            local opt = {}
+            opt.dependinfo = depinfo
+            local ok, errors = compiler_inst:compile(tostring(sourcefiles), objectfile, opt)
+            if not ok then
+                raise(type(errors) == "string" and errors or errors:str())
+            end
+        end
+        self:add_depvalues(compiler_inst:program())
+        local compflags = compiler_inst:compflags({target = opt.target, sourcefile = sourcefiles, configs = opt.configs})
+        self:add_depvalues(compflags)
+    end
     -- add compilation command and bind run environments of compiler
-    self:mkdir(path.directory(objectfile))
     self:compilev(argv, table.join({sourcekind = sourcekind, compiler = compiler_inst}, opt))
 end
 
@@ -337,21 +368,23 @@ function batchcmds:compilev(argv, opt)
         compiler_inst = compiler.load(sourcekind, opt)
     end
 
-    -- we need to translate path for the project generator
-    local patterns = {"^([%-/]external:I)(.*)",
-                      "^([%-/]I)(.*)",
-                      "^([%-/]Fp)(.*)",
-                      "^([%-/]Fd)(.*)",
-                      "^([%-/]Yu)(.*)",
-                      "^([%-/]FI)(.*)"}
-    for idx, item in ipairs(argv) do
-        if type(item) == "string" then
-            for _, pattern in ipairs(patterns) do
-                local _, count = item:gsub(pattern, function (prefix, value)
-                    argv[idx] = path(value, function (p) return prefix .. p end)
-                end)
-                if count > 0 then
-                    break
+    if self.generator then
+        -- we need to translate path for the project generator
+        local patterns = {"^([%-/]external:I)(.*)",
+                        "^([%-/]I)(.*)",
+                        "^([%-/]Fp)(.*)",
+                        "^([%-/]Fd)(.*)",
+                        "^([%-/]Yu)(.*)",
+                        "^([%-/]FI)(.*)"}
+        for idx, item in ipairs(argv) do
+            if type(item) == "string" then
+                for _, pattern in ipairs(patterns) do
+                    local _, count = item:gsub(pattern, function (prefix, value)
+                        argv[idx] = path(value, function (p) return prefix .. p end)
+                    end)
+                    if count > 0 then
+                        break
+                    end
                 end
             end
         end
@@ -359,9 +392,9 @@ function batchcmds:compilev(argv, opt)
 
     -- add compilation command and bind run environments of compiler
     if opt.verbose then
-        self:vrunv(compiler_inst:program(), argv, {envs = table.join(compiler_inst:runenvs(), opt.envs)})
+        self:vrunv(compiler_inst:program(), argv, {envs = table.join(compiler_inst:runenvs(), opt.envs), func = opt.func})
     else
-        self:runv(compiler_inst:program(), argv, {envs = table.join(compiler_inst:runenvs(), opt.envs)})
+        self:runv(compiler_inst:program(), argv, {envs = table.join(compiler_inst:runenvs(), opt.envs), func = opt.func})
     end
 end
 
@@ -382,6 +415,7 @@ function batchcmds:link(objectfiles, targetfile, opt)
 
     -- load linker and get link command
     local linker_inst = target and target:linker() or linker.load(opt.targetkind, opt.sourcekinds, opt)
+    opt.rawargs = true
     local program, argv = linker_inst:linkargv(objectfiles, path(targetfile), opt)
 
     -- we need to translate path for the project generator
@@ -403,7 +437,16 @@ function batchcmds:link(objectfiles, targetfile, opt)
 
     -- add link command and bind run environments of linker
     self:mkdir(path.directory(targetfile))
-    self:vrunv(program, argv, {envs = table.join(linker_inst:runenvs(), opt.envs)})
+
+    local f = function(depinfo)
+        local ok, errors = linker_inst:link(sourcefiles, objectfile, depinfo, {}, opt)
+        if not ok then
+            raise(type(errors) == "string" and errors or errors:str())
+        end
+    end
+    self:add_depvalues(program)
+    self:add_depvalues(argv)
+    self:vrunv(program, argv, {envs = table.join(linker_inst:runenvs(), opt.envs), func = f})
 end
 
 -- add command: os.mkdir
@@ -497,6 +540,14 @@ function batchcmds:add_depvalues(...)
     self._DEPINFO = depinfo
 end
 
+-- add dependent values
+function batchcmds:add_outputfiles(...)
+    local depinfo = self._DEPINFO or {}
+    depinfo.outputs = depinfo.outputs or {}
+    table.join2(depinfo.outputs, ...)
+    self._DEPINFO = depinfo
+end
+
 -- set the last mtime of dependent files and values
 function batchcmds:set_depmtime(lastmtime)
     local depinfo = self._DEPINFO or {}
@@ -518,9 +569,11 @@ function batchcmds:runcmds(opt)
         return
     end
     local depinfo = self:depinfo()
+    opt.depinfo = {}
     if depinfo and depinfo.files then
         depend.on_changed(function ()
             _runcmds(self:cmds(), opt)
+            return opt.depinfo
         end, table.join(depinfo, {dryrun = opt.dryrun, changed = opt.changed}))
     else
         _runcmds(self:cmds(), opt)
@@ -533,6 +586,6 @@ end
 --
 function new(opt)
     opt = opt or {}
-    return batchcmds {_TARGET = opt.target, _CMDS = {}}
+    return batchcmds {_TARGET = opt.target, generator = opt.generator, _CMDS = {}}
 end
 

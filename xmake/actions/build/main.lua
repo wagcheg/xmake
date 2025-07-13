@@ -24,8 +24,10 @@ import("core.base.global")
 import("core.base.task")
 import("core.tool.toolchain")
 import("core.cache.detectcache")
+import("core.cache.localcache")
 import("core.project.rule")
 import("core.project.config")
+import("core.project.depend")
 import("core.project.project")
 import("core.platform.platform")
 import("core.theme.theme")
@@ -208,6 +210,10 @@ function main(opt)
     local build_time = os.mclock()
     build_targets(targetname, {group_pattern = group_pattern})
     build_time = os.mclock() - build_time
+
+    if depend.needsave() then
+        localcache.save("depend")
+    end
 
     -- leave project directory
     os.cd(oldir)

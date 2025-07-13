@@ -45,33 +45,37 @@ function instance_deps.load_deps(instance, instances, deps, orderdeps, depspath,
         -- we reverse to get the flat dependencies in order to ensure the correct linking order
         -- @see https://github.com/xmake-io/xmake/issues/3144
         local depname = plaindeps[total + 1 - idx]
-        local depinst = instances[depname]
-        if depinst == nil and instance.namespace then
-            local namespace = instance:namespace()
-            if namespace then
-                depinst = instances[namespace .. "::" .. depname]
+        if not deps[depname] then
+            local depinst = instances[depname]
+            if depinst == nil and instance.namespace then
+               local namespace = instance:namespace()
+                if namespace then
+                    depinst = instances[namespace .. "::" .. depname]
+                end
             end
-        end
-        if depinst then
-            local continue_walk = true
-            if walkdep then
-                continue_walk = walkdep(instance, depinst)
-            end
-            if continue_walk then
-                if not deps[depname] then
-                    deps[depname] = depinst
-                    local depspath_sub
-                    if depspath then
-                        for idx, name in ipairs(depspath) do
-                            if name == depname then
-                                local circular_deps = table.slice(depspath, idx)
-                                table.insert(circular_deps, depname)
-                                os.raise("circular dependency(%s) detected!", table.concat(circular_deps, ", "))
-                            end
+            if depinst then
+                local continue_walk = true
+                local insert = true
+                if walkdep then
+                    continue_walk, insert = walkdep(instance, depinst)
+                    insert = insert or continue_walk
+                end
+                local depspath_sub
+                if depspath then
+                    for idx, name in ipairs(depspath) do
+                        if name == depname then
+                            local circular_deps = table.slice(depspath, idx)
+                            table.insert(circular_deps, depname)
+                            os.raise("circular dependency(%s) detected!", table.concat(circular_deps, ", "))
                         end
-                        depspath_sub = table.join(depspath, depname)
                     end
+                    depspath_sub = table.join(depspath, depname)
+                end
+                if continue_walk then
                     instance_deps.load_deps(depinst, instances, deps, orderdeps, depspath_sub, walkdep)
+                end
+                if insert then
+                    deps[depname] = depinst
                     table.insert(orderdeps, depinst)
                 end
             end

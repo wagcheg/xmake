@@ -251,20 +251,44 @@ end
 
 -- build deps
 function _instance:_build_deps()
-    if target._project() then
-        local instances   = target._project().targets()
+    local project = target._project()
+    if project then
+        local instances   = project.targets()
         self._DEPS        = self._DEPS or {}
         self._ORDERDEPS   = self._ORDERDEPS or {}
         self._INHERITDEPS = self._INHERITDEPS or {}
-        instance_deps.load_deps(self, instances, self._DEPS, self._ORDERDEPS, {self:fullname()})
+
+--         instance_deps.load_deps(self, instances, self._DEPS, self._ORDERDEPS, {self:fullname()})
         -- @see https://github.com/xmake-io/xmake/issues/4689
         instance_deps.load_deps(self, instances, {}, self._INHERITDEPS, {self:fullname()}, function (t, dep)
             local depinherit = t:extraconf("deps", dep:name(), "inherit")
             if depinherit == nil then
                 depinherit = t:extraconf("deps", dep:fullname(), "inherit")
             end
-            return depinherit == nil or depinherit
+            if type(depinherit) == "string" then
+                -- return walk, insert
+                -- it works with -Wl,-no-undefined
+                -- TODO default ld only binary need .a and .so which allow link parallel
+                if self == t then
+                    return ((self:is_binary() or self:is_shared()) and (depinherit == "private" or depinherit == "interface" or depinherit == "public")), (depinherit == "private" or depinherit == "public")
+                else
+                    return (not (t:is_binary() or (t:is_shared() and depinherit == "private"))), (not (t:is_binary() or (t:is_shared() and depinherit == "private")))
+                end
+                -- if self == t then
+                --     return ((self:is_binary()) and (depinherit == "private" or depinherit == "interface" or depinherit == "public")), (depinherit == "private" or depinherit == "public")
+                -- else
+                --     return (not (t:is_binary()), (not (t:is_binary())
+                -- end
+            elseif type(depinherit) == "boolean" then
+                return depinherit
+            else
+                return true
+            end
         end)
+        self._ORDERDEPS = self._INHERITDEPS
+        for _,dep  in ipairs(self._ORDERDEPS) do
+            self._DEPS[dep:name()] = dep
+        end
     end
 end
 
@@ -1439,52 +1463,68 @@ end
 function _instance:objectdir(opt)
 
     -- the object directory
-    local objectdir = self:get("objectdir")
-    if not objectdir then
-        objectdir = path.join(config.builddir(), ".objs")
-    end
-    local namespace = self:namespace()
-    if namespace then
-        objectdir = path.join(objectdir, (namespace:replace("::", path.sep())), self:name())
+    local objectdir = nil
+    if self._objectdir then
+        objectdir = self._objectdir
     else
-        objectdir = path.join(objectdir, self:name())
+        objectdir = self:get("objectdir")
+        if not objectdir then
+            objectdir = path.join(config.builddir(), ".objs")
+        end
+        local namespace = self:namespace()
+        if namespace then
+            objectdir = path.join(objectdir, (namespace:replace("::", path.sep())), self:name())
+        else
+            objectdir = path.join(objectdir, self:name())
+        end
+        self._objectdir = objectdir
     end
-
     -- get root directory of target
     local intermediate_directory = self:policy("build.intermediate_directory")
     if (opt and opt.root) or intermediate_directory == false then
         return objectdir
     end
 
-    -- generate intermediate directory
-    local plat = self:plat()
-    if plat then
-        objectdir = path.join(objectdir, plat)
+    if self._objectintermediatedir then
+        return self._objectintermediatedir
+    else
+        -- generate intermediate directory
+        local plat = self:plat()
+        if plat then
+            objectdir = path.join(objectdir, plat)
+        end
+        local arch = self:arch()
+        if arch then
+            objectdir = path.join(objectdir, arch)
+        end
+        local mode = config.mode()
+        if mode then
+            objectdir = path.join(objectdir, mode)
+        end
+        self._objectintermediatedir = objectdir
+        return objectdir
     end
-    local arch = self:arch()
-    if arch then
-        objectdir = path.join(objectdir, arch)
-    end
-    local mode = config.mode()
-    if mode then
-        objectdir = path.join(objectdir, mode)
-    end
-    return objectdir
 end
 
 -- get the dependent files directory
 function _instance:dependir(opt)
 
     -- init the dependent directory
-    local dependir = self:get("dependir")
-    if not dependir then
-        dependir = path.join(config.builddir(), ".deps")
-    end
-    local namespace = self:namespace()
-    if namespace then
-        dependir = path.join(dependir, (namespace:replace("::", path.sep())), self:name())
+    local dependir = nil
+    if self._dependir then
+        dependir = self._dependir
     else
-        dependir = path.join(dependir, self:name())
+        dependir = self:get("dependir")
+        if not dependir then
+            dependir = path.join(config.builddir(), ".deps")
+        end
+        local namespace = self:namespace()
+        if namespace then
+            dependir = path.join(dependir, (namespace:replace("::", path.sep())), self:name())
+        else
+            dependir = path.join(dependir, self:name())
+        end
+        self._dependir = dependir
     end
 
     -- get root directory of target
@@ -1493,35 +1533,45 @@ function _instance:dependir(opt)
         return dependir
     end
 
-    -- generate intermediate directory
-    local plat = self:plat()
-    if plat then
-        dependir = path.join(dependir, plat)
+    if self._dependintermediatedir then
+        return self._dependintermediatedir
+    else
+        -- generate intermediate directory
+        local plat = self:plat()
+        if plat then
+            dependir = path.join(dependir, plat)
+        end
+        local arch = self:arch()
+        if arch then
+            dependir = path.join(dependir, arch)
+        end
+        local mode = config.mode()
+        if mode then
+            dependir = path.join(dependir, mode)
+        end
+        self._dependintermediatedir = dependir
+        return dependir
     end
-    local arch = self:arch()
-    if arch then
-        dependir = path.join(dependir, arch)
-    end
-    local mode = config.mode()
-    if mode then
-        dependir = path.join(dependir, mode)
-    end
-    return dependir
 end
 
 -- get the autogen files directory
 function _instance:autogendir(opt)
-
-    -- init the autogen directory
-    local autogendir = self:get("autogendir")
-    if not autogendir then
-        autogendir = path.join(config.builddir(), ".gens")
-    end
-    local namespace = self:namespace()
-    if namespace then
-        autogendir = path.join(autogendir, (namespace:replace("::", path.sep())), self:name())
+    local autogendir = nil
+    if self._autogendir then
+        autogendir = self._autogendir
     else
-        autogendir = path.join(autogendir, self:name())
+        -- init the autogen directory
+        autogendir = self:get("autogendir")
+        if not autogendir then
+            autogendir = path.join(config.builddir(), ".gens")
+        end
+        local namespace = self:namespace()
+        if namespace then
+            autogendir = path.join(autogendir, (namespace:replace("::", path.sep())), self:name())
+        else
+            autogendir = path.join(autogendir, self:name())
+        end
+        self._autogendir = autogendir
     end
 
     -- get root directory of target
@@ -1531,19 +1581,25 @@ function _instance:autogendir(opt)
     end
 
     -- generate intermediate directory
-    local plat = self:plat()
-    if plat then
-        autogendir = path.join(autogendir, plat)
+    if self._autogenintermediatedir then
+        return self._autogenintermediatedir
+    else
+        -- generate intermediate directory
+        local plat = self:plat()
+        if plat then
+            autogendir = path.join(autogendir, plat)
+        end
+        local arch = self:arch()
+        if arch then
+            autogendir = path.join(autogendir, arch)
+        end
+        local mode = config.mode()
+        if mode then
+            autogendir = path.join(autogendir, mode)
+        end
+        self._autogenintermediatedir = autogendir
+        return autogendir
     end
-    local arch = self:arch()
-    if arch then
-        autogendir = path.join(autogendir, arch)
-    end
-    local mode = config.mode()
-    if mode then
-        autogendir = path.join(autogendir, mode)
-    end
-    return autogendir
 end
 
 -- get the autogen file path from the given source file path

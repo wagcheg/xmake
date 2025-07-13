@@ -120,6 +120,23 @@ function table.join2(self, ...)
     return self
 end
 
+-- join all objects and tables to self vector
+function table.vjoin2(self, ...)
+    local count = #self
+    for _, t in ipairs({...}) do
+        if type(t) == "table" and not t.__wrap_locked__ then
+            for k, v in pairs(t) do
+                count = count + 1
+                self[count] = v
+            end
+        else
+            count = count + 1
+            self[count] = t
+        end
+    end
+    return self
+end
+
 -- shallow join all objects, it will not expand all table values
 function table.shallow_join(...)
     local result = {}

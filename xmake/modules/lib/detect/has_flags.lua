@@ -57,7 +57,7 @@ function main(name, flags, opt)
     --opt.version = true
 
     -- find tool program and version first
-    local tool = find_tool(name, opt)
+    local tool = opt.tool or find_tool(name, opt)
     if not tool then
         return false
     end
