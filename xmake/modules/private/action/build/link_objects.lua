@@ -29,13 +29,14 @@ import("private.action.build.target", {alias = "target_buildutils"})
 
 -- do link target
 function _do_link_target(target, opt)
-    local linkinst = linker.load(target:kind(), target:sourcekinds(), {target = target})
-    local linkflags = linkinst:linkflags({target = target})
+    local dryrun = option.get("dry-run")
 
     -- need build this target?
     local depfiles = target_buildutils.get_linkdepfiles(target)
-    local dryrun = option.get("dry-run")
-    local depvalues = {linkinst:program(), linkflags}
+    local linkinst = linker.load(target:kind(), target:sourcekinds(), {target = target})
+    local linkflags = dryrun and {} or linkinst:linkflags({target = target})
+    local depvalues = dryrun and {} or {linkinst:program(), linkflags}
+    
     depend.on_changed(function ()
         local filename = target:filename()
         if target:namespace() then

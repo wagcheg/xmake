@@ -60,7 +60,7 @@ function graph:clear()
     self._edges = {}
     self._adjacent_edges = {}
     self._edges_map = {}
-
+    self._hashsetvertices = hashset.new()
     -- clear partial topological sort state
     self:partial_topo_sort_reset()
 end
@@ -92,13 +92,14 @@ end
 
 -- has the given vertex?
 function graph:has_vertex(v)
-    return table.contains(self:vertices(), v)
+    return hashset.has(self._hashsetvertices, v)
 end
 
 -- add an isolated without edges
 function graph:add_vertex(v)
     if not self:has_vertex(v) then
         table.insert(self._vertices, v)
+        hashset.insert(self._hashsetvertices, v)
         self._adjacent_edges[v] = {}
     end
 
@@ -111,6 +112,7 @@ function graph:remove_vertex(v)
     local contains = false
     table.remove_if(self._vertices, function (_, item)
         if item == v then
+            hashset.remove(self._hashsetvertices, v)
             contains = true
             return true
         end
@@ -378,10 +380,12 @@ function graph:add_edge(from, to)
     local e = edge.new(from, to)
     if not self:has_vertex(from) then
         table.insert(self._vertices, from)
+        hashset.insert(self._hashsetvertices, from)
         self._adjacent_edges[from] = {}
     end
     if not self:has_vertex(to) then
         table.insert(self._vertices, to)
+        hashset.insert(self._hashsetvertices, to)
         self._adjacent_edges[to] = {}
     end
     local edges_map = self._edges_map
@@ -409,12 +413,12 @@ function graph:has_edge(from, to)
         local from_map = edges_map[from]
         if from_map and from_map[to] then
             return true
-        else
-            for _, e in ipairs(edges) do
-                if e:to() == to then
-                    return true
-                end
-            end
+        -- else
+        --     for _, e in ipairs(edges) do
+        --         if e:to() == to then
+        --             return true
+        --         end
+        --     end
         end
     end
     return false

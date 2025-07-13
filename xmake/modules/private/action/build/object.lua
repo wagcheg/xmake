@@ -36,6 +36,8 @@ function _do_build_file(target, sourcefile, opt)
     local dependfile = opt.dependfile
     local sourcekind = opt.sourcekind
 
+    -- dry run?
+    local dryrun = option.get("dry-run")
     -- load compiler
     local compinst = compiler.load(sourcekind, {target = target})
 
@@ -43,27 +45,27 @@ function _do_build_file(target, sourcefile, opt)
     local compflags = compinst:compflags({target = target, sourcefile = sourcefile, configs = opt.configs})
 
     -- load dependent info
-    local dependinfo = target:is_rebuilt() and {} or (depend.load(dependfile, {target = target}) or {})
+    local dependinfo = (target:is_rebuilt() or dryrun) and {} or (depend.load(dependfile, {target = target}) or {})
+    local depvalues = dryrun and {} or {compinst:program(), compflags}
+    if not dryrun then
 
-    -- dry run?
-    local dryrun = option.get("dry-run")
+        -- need build this object?
+        --
+        -- we need use `os.mtime(dependfile)` to determine the mtime of the dependfile to avoid objectfile corruption due to compilation interruptions
+        -- @see https://github.com/xmake-io/xmake/issues/748
+        --
+        -- we also need avoid the problem of not being able to recompile after the objectfile has been deleted
+        -- @see https://github.com/xmake-io/xmake/issues/2551#issuecomment-1183922208
+        --
+        -- optimization:
+        -- we enable time cache to speed up is_changed, because there are a lot of header files in depfiles.
+        -- but we cannot cache it in link stage, maybe some objectfiles will be updated.
+        -- @see https://github.com/xmake-io/xmake/issues/6089
 
-    -- need build this object?
-    --
-    -- we need use `os.mtime(dependfile)` to determine the mtime of the dependfile to avoid objectfile corruption due to compilation interruptions
-    -- @see https://github.com/xmake-io/xmake/issues/748
-    --
-    -- we also need avoid the problem of not being able to recompile after the objectfile has been deleted
-    -- @see https://github.com/xmake-io/xmake/issues/2551#issuecomment-1183922208
-    --
-    -- optimization:
-    -- we enable time cache to speed up is_changed, because there are a lot of header files in depfiles.
-    -- but we cannot cache it in link stage, maybe some objectfiles will be updated.
-    -- @see https://github.com/xmake-io/xmake/issues/6089
-    local depvalues = {compinst:program(), compflags}
-    local lastmtime = os.isfile(objectfile) and os.mtime(dependfile) or 0
-    if not dryrun and not depend.is_changed(dependinfo, {lastmtime = lastmtime, values = depvalues, timecache = true}) then
-        return
+        local lastmtime = os.isfile(objectfile) and os.mtime(dependfile) or 0
+        if not depend.is_changed(dependinfo, {lastmtime = lastmtime, values = depvalues, timecache = true}) then
+            return
+        end
     end
 
     -- is verbose?
@@ -107,6 +109,7 @@ function _do_build_file(target, sourcefile, opt)
         local build_pch
         local pcxxoutputfile = target:pcoutputfile("cxx")
         local pcoutputfile = target:pcoutputfile("c")
+        local extradepsfiles = target:values("extradepsfiles")
         if pcxxoutputfile or pcoutputfile then
             -- https://github.com/xmake-io/xmake/issues/3988
             local extension = path.extension(sourcefile)
@@ -119,6 +122,9 @@ function _do_build_file(target, sourcefile, opt)
         end
         if target:has_sourcekind("cc") and pcoutputfile and not build_pch then
             table.insert(dependinfo.files, pcoutputfile)
+        end
+        if extradepsfiles then
+            table.insert(dependinfo.files, extradepsfiles)
         end
         depend.save(dependinfo, dependfile)
     end
