@@ -37,6 +37,7 @@ local batchcmds = batchcmds or object { _init = {"_TARGET", "_CMDS", "_DEPINFO",
 
 -- show text
 function _show(showtext, progress)
+    progress = type(progress) == "table" and progress:percent() or math.floor(progress)
     if option.get("verbose") then
         cprint(showtext)
     else
@@ -525,6 +526,14 @@ function batchcmds:add_depvalues(...)
     local depinfo = self._DEPINFO or {}
     depinfo.values = depinfo.values or {}
     table.join2(depinfo.values, ...)
+    self._DEPINFO = depinfo
+end
+
+-- add dependent values
+function batchcmds:add_outputfiles(...)
+    local depinfo = self._DEPINFO or {}
+    depinfo.outputs = depinfo.outputs or {}
+    table.join2(depinfo.outputs, ...)
     self._DEPINFO = depinfo
 end
 

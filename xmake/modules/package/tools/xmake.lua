@@ -70,7 +70,7 @@ end
 
 -- get configs for windows
 function _get_configs_for_windows(package, configs, opt)
-    local names = {"vs", "vs_toolset"}
+    local names = {"vs", "vs_toolset", "vs_sdkver"}
     for _, name in ipairs(names) do
         local value = get_config(name)
         if value ~= nil then

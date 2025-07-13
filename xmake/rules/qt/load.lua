@@ -406,7 +406,10 @@ function main(target, opt)
         -- e.g. libqtmain.a, libqtfreetype.q, libqtlibpng.a on Qt5.x
         libpattern = target:is_plat("windows") and "qt*.lib" or "libqt*.a"
     end
-    target:add("syslinks", _find_static_links_3rd(target, qt.libdir, qt_sdkver, libpattern))
+    if qt.static_links_3rd == nil then
+        qt.static_links_3rd = _find_static_links_3rd(target, qt.libdir, qt_sdkver, libpattern)
+    end
+    target:add("syslinks", qt.static_links_3rd)
 
     -- add user syslinks
     if syslinks_user then

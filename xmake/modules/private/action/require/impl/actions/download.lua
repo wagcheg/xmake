@@ -163,9 +163,6 @@ function _download(package, url, sourcedir, opt)
     local packagefile = opt.url_filename
     if not packagefile then
         packagefile = url_filename(url)
-        if not os.isfile(packagefile) then -- we need to be compatible with the old file names
-            packagefile = package:name() .. "-" .. package:version_str() .. _url_extension(packagefile)
-        end
     end
 
     -- get sourcehash from the given url

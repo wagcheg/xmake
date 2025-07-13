@@ -62,7 +62,7 @@ function _do_build_file(target, sourcefile, opt)
     -- @see https://github.com/xmake-io/xmake/issues/6089
     local depvalues = {compinst:program(), compflags}
     local lastmtime = os.isfile(objectfile) and os.mtime(dependfile) or 0
-    if not dryrun and not depend.is_changed(dependinfo, {lastmtime = lastmtime, values = depvalues, timecache = true}) then
+    if not dryrun and not depend.is_quickchanged(dependfile) and not depend.is_changed(dependinfo, {lastmtime = lastmtime, values = depvalues, timecache = true}) then
         return
     end
 
@@ -107,6 +107,7 @@ function _do_build_file(target, sourcefile, opt)
         local build_pch
         local pcxxoutputfile = target:pcoutputfile("cxx")
         local pcoutputfile = target:pcoutputfile("c")
+        local extradepsfiles = target:values("extradepsfiles")
         if pcxxoutputfile or pcoutputfile then
             -- https://github.com/xmake-io/xmake/issues/3988
             local extension = path.extension(sourcefile)
@@ -119,6 +120,9 @@ function _do_build_file(target, sourcefile, opt)
         end
         if target:has_sourcekind("cc") and pcoutputfile and not build_pch then
             table.insert(dependinfo.files, pcoutputfile)
+        end
+        if extradepsfiles then
+            table.insert(dependinfo.files, extradepsfiles)
         end
         depend.save(dependinfo, dependfile)
     end

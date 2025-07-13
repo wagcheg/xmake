@@ -39,7 +39,13 @@ function config(target, langkind, opt)
             -- https://github.com/xmake-io/xmake/issues/5858
             if not os.isfile(headerfile) then
                 io.writefile(headerfile, ([[
+#ifdef _MSC_VER
+#if _MSC_VER >= 1929
 #pragma system_header
+#endif
+#else
+#pragma GCC system_header
+#endif
 #ifdef __cplusplus
 #include "%s"
 #endif // __cplusplus

@@ -93,7 +93,7 @@ rule("wdk.mc")
         -- need build this object?
         local dependfile = target:dependfile(headerfile)
         local dependinfo = target:is_rebuilt() and {} or (depend.load(dependfile) or {})
-        if not depend.is_changed(dependinfo, {lastmtime = os.mtime(headerfile), values = args}) then
+        if not depend.is_quickchanged(dependfile) and not depend.is_changed(dependinfo, {lastmtime = os.mtime(headerfile), values = args}) then
             return
         end
 
