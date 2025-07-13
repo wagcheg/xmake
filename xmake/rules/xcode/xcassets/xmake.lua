@@ -44,7 +44,7 @@ rule("xcode.xcassets")
         -- need re-compile it?
         local dependfile = target:dependfile(sourcefile)
         local dependinfo = target:is_rebuilt() and {} or (depend.load(dependfile) or {})
-        if not depend.is_changed(dependinfo, {lastmtime = os.mtime(dependfile)}) then
+        if not depend.is_quickchanged(dependfile) and not depend.is_changed(dependinfo, {lastmtime = os.mtime(dependfile)}) then
             return
         end
 

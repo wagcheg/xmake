@@ -81,7 +81,7 @@ function main(target, opt)
     local targetfile = target:targetfile()
     local dependfile = target:dependfile(target_app)
     local dependinfo = target:is_rebuilt() and {} or (depend.load(dependfile) or {})
-    if not depend.is_changed(dependinfo, {lastmtime = os.mtime(dependfile)}) then
+    if not depend.is_quickchanged(dependfile) and not depend.is_changed(dependinfo, {lastmtime = os.mtime(dependfile)}) then
         return
     end
 

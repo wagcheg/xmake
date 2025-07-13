@@ -22,6 +22,7 @@
 import("core.base.option")
 import("core.base.global")
 import("core.base.task")
+import("core.cache.localcache")
 import("core.project.rule")
 import("core.project.config")
 import("core.project.project")
@@ -199,6 +200,8 @@ function main(opt)
     local build_time = os.mclock()
     build_targets(targetname, {group_pattern = group_pattern})
     build_time = os.mclock() - build_time
+
+    localcache.save("depend")
 
     -- leave project directory
     os.cd(oldir)

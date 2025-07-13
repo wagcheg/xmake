@@ -60,7 +60,7 @@ function main(target, sourcebatch, opt)
 
     -- need build this object?
     local depvalues = {compinst:program(), compflags}
-    if not depend.is_changed(dependinfo, {lastmtime = os.mtime(objectfile), values = depvalues}) then
+    if not depend.is_quickchanged(dependfile) and not depend.is_changed(dependinfo, {lastmtime = os.mtime(objectfile), values = depvalues}) then
         return
     end
 
