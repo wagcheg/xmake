@@ -54,31 +54,29 @@ function instance_deps.load_deps(instance, instances, deps, orderdeps, depspath,
                 end
             end
             if depinst then
-                deps[depname] = depinst
                 local continue_walk = true
                 local insert = true
                 if walkdep then
                     continue_walk, insert = walkdep(instance, depinst)
                     insert = insert or continue_walk
                 end
-                if continue_walk then
-                    local depspath_sub
-                    if depspath then
-                        for idx, name in ipairs(depspath) do
-                            if name == depname then
-                                local circular_deps = table.slice(depspath, idx)
-                                table.insert(circular_deps, depname)
-                                os.raise("circular dependency(%s) detected!", table.concat(circular_deps, ", "))
-                            end
+                local depspath_sub
+                if depspath then
+                    for idx, name in ipairs(depspath) do
+                        if name == depname then
+                            local circular_deps = table.slice(depspath, idx)
+                            table.insert(circular_deps, depname)
+                            os.raise("circular dependency(%s) detected!", table.concat(circular_deps, ", "))
                         end
-                        depspath_sub = table.join(depspath, depname)
                     end
-                    if continue_walk then
-                        instance_deps.load_deps(depinst, instances, deps, orderdeps, depspath_sub, walkdep)
-                    end
-                    if insert then
-                        table.insert(orderdeps, depinst)
-                    end
+                    depspath_sub = table.join(depspath, depname)
+                end
+                if continue_walk then
+                    instance_deps.load_deps(depinst, instances, deps, orderdeps, depspath_sub, walkdep)
+                end
+                if insert then
+                    deps[depname] = depinst
+                    table.insert(orderdeps, depinst)
                 end
             end
         end

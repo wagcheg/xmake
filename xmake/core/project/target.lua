@@ -285,8 +285,10 @@ function _instance:_build_deps()
 --                     return (not (t:is_binary()), (not (t:is_binary())
 --                 end
         end)
-        self._DEPS = self._INHERITDEPS
         self._ORDERDEPS = self._INHERITDEPS
+        for _,dep  in ipairs(self._ORDERDEPS) do
+            self._DEPS[dep:name()] = dep
+        end
     end
 end
 
