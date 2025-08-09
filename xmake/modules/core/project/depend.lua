@@ -20,6 +20,7 @@
 
 -- imports
 import("core.base.option")
+import("core.cache.localcache")
 import("core.project.project")
 
 -- load depfiles
@@ -57,11 +58,15 @@ function load(dependfile, opt)
         local dependinfo = try { function() return io.load(dependfile) end }
         if dependinfo then
             -- attempt to load depfiles from the compilers
-            local depfiles = dependinfo.depfiles
-            if depfiles then
-                local depfiles_parser = _get_depfiles_parser(dependinfo.depfiles_format)
-                _load_depfiles(depfiles_parser, dependinfo, depfiles, opt)
-                dependinfo.depfiles = nil
+            if opt.loadfiles then
+                local depfiles = dependinfo.depfiles
+                if depfiles then
+                    local depfiles_parser = _get_depfiles_parser(dependinfo.depfiles_format)
+                    _load_depfiles(depfiles_parser, dependinfo, depfiles, opt)
+                    dependinfo.depfiles = nil
+                end
+            else
+--                 dependinfo.files = nil
             end
             return dependinfo
         end
@@ -85,6 +90,18 @@ end
 -- save dependent info to file
 function save(dependinfo, dependfile)
     io.save(dependfile, dependinfo)
+
+    local depfiles = dependinfo.depfiles
+    if depfiles then
+        local depfiles_parser = _get_depfiles_parser(dependinfo.depfiles_format)
+        _load_depfiles(depfiles_parser, dependinfo, depfiles, opt)
+        dependinfo.depfiles = nil
+    end
+    for _, file in ipairs(dependinfo.files) do
+        local t =  os.mtime(file)
+        localcache.set3("depend", "deps", file, dependfile, t)
+    end
+    localcache.set2("depend", "log", dependfile, true)
 end
 
 -- Is the dependent info changed?
@@ -173,7 +190,7 @@ function is_changed(dependinfo, opt)
         local optfiles = table.wrap(opt.files)
         if #files ~= #optfiles then
             if _is_show_diagnosis_info() then
-                cprint("${color.warning}[check_build_deps]: files count mismatch, old: %s, new: %s", files, optfiles)
+                cprint("${color.warning}[check_build_deps]: files count mismatch, old: %s, new: %s", #files, #optfiles)
             end
             return true
         end
@@ -223,12 +240,37 @@ function on_changed(callback, opt)
         dependfile = project.tmpfile(table.concat(table.wrap(opt.files), ""))
     end
 
+    local loged = localcache.get2("depend", "log", dependfile)
+    local fileschanged = false
+    if loged then
+        if not changeddependfile then
+            changeddependfile = {}
+            local deps = localcache.get("depend", "deps")
+            for dep, depinfo in pairs(deps) do
+                local t = os.mtime(dep)
+                for file, oldt in pairs(depinfo) do
+                    if oldt ~= t then
+                        changeddependfile[file] = true
+                    end
+                end
+            end
+        end
+    end
+
+    local quickchanged = loged and fileschanged
+    if quickchanged then
+        if _is_show_diagnosis_info() then
+            cprint("${color.warning}[check_build_deps]: quickchanged")
+        end
+    end
+    local changed = opt.changed and true or quickchanged
+    opt.loadfiles = not (loged and not fileschanged)
     -- load dependent info
-    local dependinfo = opt.changed and {} or (load(dependfile) or {})
+    local dependinfo = changed and {} or (load(dependfile, opt) or {})
 
     -- @note we use mtime(dependfile) instead of mtime(objectfile) to ensure the object file is is fully compiled.
     -- @see https://github.com/xmake-io/xmake/issues/748
-    if not is_changed(dependinfo, {
+    if not changed and not is_changed(dependinfo, {
             timecache = opt.timecache,
             lastmtime = opt.lastmtime > 0 and os.mtime(dependfile) or 0,
             values = opt.values, files = opt.files}) then
