@@ -160,7 +160,7 @@ function swig_build_file(target, sourcefile, opt, par)
 
     local dependfile = target:dependfile(objectfile)
     local dependinfo = target:is_rebuilt() and {} or (depend.load(dependfile) or {})
-    if not depend.is_changed(dependinfo, {lastmtime = os.mtime(objectfile),
+    if not depend.is_quickchanged(dependfile) and not depend.is_changed(dependinfo, {lastmtime = os.mtime(objectfile),
                                           values = argv
                                           }) then
         return

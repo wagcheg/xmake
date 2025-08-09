@@ -63,7 +63,7 @@ function _do_build_file(target, sourcefile, opt)
         -- @see https://github.com/xmake-io/xmake/issues/6089
 
         local lastmtime = os.isfile(objectfile) and os.mtime(dependfile) or 0
-        if not depend.is_changed(dependinfo, {lastmtime = lastmtime, values = depvalues, timecache = true}) then
+        if not depend.is_quickchanged(dependfile) and not depend.is_changed(dependinfo, {lastmtime = lastmtime, values = depvalues, timecache = true}) then
             return
         end
     end

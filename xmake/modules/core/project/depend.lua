@@ -58,7 +58,8 @@ function load(dependfile, opt)
         local dependinfo = try { function() return io.load(dependfile) end }
         if dependinfo then
             -- attempt to load depfiles from the compilers
-            if opt.loadfiles then
+            local notloadfiles = (opt ~= nil and opt.notloadfiles ~= nil) and opt.notloadfiles or notloadfiles(dependfile)
+            if not notloadfiles then
                 local depfiles = dependinfo.depfiles
                 if depfiles then
                     local depfiles_parser = _get_depfiles_parser(dependinfo.depfiles_format)
@@ -106,12 +107,11 @@ end
 
 -- Is the dependent info changed?
 --
--- if not depend.is_changed(dependinfo, {filemtime = os.mtime(objectfile), values = {...}}) then
+-- if not depend.is_quickchanged(dependfile) and not depend.is_changed(dependinfo, {filemtime = os.mtime(objectfile), values = {...}}) then
 --      return
 -- end
 --
 function is_changed(dependinfo, opt)
-
     -- empty depend info? always be changed
     local files = table.wrap(dependinfo.files)
     local values = table.wrap(dependinfo.values)
@@ -240,37 +240,12 @@ function on_changed(callback, opt)
         dependfile = project.tmpfile(table.concat(table.wrap(opt.files), ""))
     end
 
-    local loged = localcache.get2("depend", "log", dependfile)
-    local fileschanged = false
-    if loged then
-        if not changeddependfile then
-            changeddependfile = {}
-            local deps = localcache.get("depend", "deps")
-            for dep, depinfo in pairs(deps) do
-                local t = os.mtime(dep)
-                for file, oldt in pairs(depinfo) do
-                    if oldt ~= t then
-                        changeddependfile[file] = true
-                    end
-                end
-            end
-        end
-    end
-
-    local quickchanged = loged and fileschanged
-    if quickchanged then
-        if _is_show_diagnosis_info() then
-            cprint("${color.warning}[check_build_deps]: quickchanged")
-        end
-    end
-    local changed = opt.changed and true or quickchanged
-    opt.loadfiles = not (loged and not fileschanged)
     -- load dependent info
-    local dependinfo = changed and {} or (load(dependfile, opt) or {})
+    local dependinfo = opt.changed and {} or (load(dependfile) or {})
 
     -- @note we use mtime(dependfile) instead of mtime(objectfile) to ensure the object file is is fully compiled.
     -- @see https://github.com/xmake-io/xmake/issues/748
-    if not changed and not is_changed(dependinfo, {
+    if not is_quickchanged(dependfile) and not is_changed(dependinfo, {
             timecache = opt.timecache,
             lastmtime = opt.lastmtime > 0 and os.mtime(dependfile) or 0,
             values = opt.values, files = opt.files}) then
@@ -288,4 +263,47 @@ function on_changed(callback, opt)
         table.join2(dependinfo.values, opt.values)
     end
     save(dependinfo, dependfile)
+end
+
+function is_quickchanged(dependfile)
+    local loged = localcache.get2("depend", "log", dependfile)
+    local fileschanged = false
+    if loged then
+        _init_quickchanged()
+        fileschanged = changeddependfile[dependfile]
+    end
+
+    local quickchanged = loged and fileschanged
+    if quickchanged then
+        if _is_show_diagnosis_info() then
+            cprint("${color.warning}[check_build_deps]: quickly check file %s is changed, mtime: %s, lastmtime: %s", quickchanged.file, quickchanged.mtime, quickchanged.lastmtime)
+        end
+    end
+    return quickchanged
+end
+
+function notloadfiles(dependfile)
+    local loged = localcache.get2("depend", "log", dependfile)
+    local fileschanged = false
+    if loged then
+        _init_quickchanged()
+        fileschanged = changeddependfile[dependfile]
+    end
+
+    return loged and not fileschanged
+end
+
+function _init_quickchanged()
+    if not changeddependfile then
+        changeddependfile = {}
+        local deps = localcache.get("depend", "deps")
+        for dep, depinfo in pairs(deps) do
+            local mtime = os.mtime(dep)
+            for file, lastmtime in pairs(depinfo) do
+                if lastmtime ~= mtime then
+                    changeddependfile[file] = {file = dep, mtime = mtime, lastmtime = lastmtime}
+                end
+            end
+        end
+    end
 end

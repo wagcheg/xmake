@@ -99,7 +99,7 @@ rule("wdk.sign")
         local tempfile = os.tmpfile(target:targetfile())
         local dependfile = tempfile .. ".d"
         local dependinfo = target:is_rebuilt() and {} or (depend.load(dependfile) or {})
-        if not depend.is_changed(dependinfo, {lastmtime = os.mtime(tempfile)}) then
+        if not depend.is_quickchanged(dependfile) and not depend.is_changed(dependinfo, {lastmtime = os.mtime(tempfile)}) then
             return
         end
 
