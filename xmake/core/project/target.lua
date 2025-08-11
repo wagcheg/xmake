@@ -265,25 +265,25 @@ function _instance:_build_deps()
             if depinherit == nil then
                 depinherit = t:extraconf("deps", dep:fullname(), "inherit")
             end
-            if depinherit == nil then
-                depinherit = "public"
+            if type(depinherit) == "string" then
+                -- return walk, insert
+                -- it works with -Wl,-no-undefined
+                -- TODO default ld only binary need .a and .so which allow link parallel
+                if self == t then
+                    return ((self:is_binary() or self:is_shared()) and (depinherit == "private" or depinherit == "interface" or depinherit == "public")), (depinherit == "private" or depinherit == "public")
+                else
+                    return (not (t:is_binary() or (t:is_shared() and depinherit == "private"))), (not (t:is_binary() or (t:is_shared() and depinherit == "private")))
+                end
+                -- if self == t then
+                --     return ((self:is_binary()) and (depinherit == "private" or depinherit == "interface" or depinherit == "public")), (depinherit == "private" or depinherit == "public")
+                -- else
+                --     return (not (t:is_binary()), (not (t:is_binary())
+                -- end
             elseif type(depinherit) == "boolean" then
-                depinherit =  depinherit == true and "public" or "private"
-            end
-
-            -- return walk, insert
-            -- it works with -Wl,-no-undefined
-            if self == t then
-                return ((self:is_binary() or self:is_shared()) and (depinherit == "private" or depinherit == "interface" or depinherit == "public")), (depinherit == "private" or depinherit == "public")
+                return depinherit
             else
-                return (not (t:is_binary() or (t:is_shared() and depinherit == "private"))), (not (t:is_binary() or (t:is_shared() and depinherit == "private")))
+                return true
             end
-            -- TODO default ld only binary need .a and .so which allow link parallel
---                 if self == t then
---                     return ((self:is_binary()) and (depinherit == "private" or depinherit == "interface" or depinherit == "public")), (depinherit == "private" or depinherit == "public")
---                 else
---                     return (not (t:is_binary()), (not (t:is_binary())
---                 end
         end)
         self._ORDERDEPS = self._INHERITDEPS
         for _,dep  in ipairs(self._ORDERDEPS) do
